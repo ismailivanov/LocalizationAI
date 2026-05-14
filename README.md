@@ -74,6 +74,13 @@ python3 addons/localization_ai/scripts/manage_models.py \
 
 MIT — see [LICENSE](LICENSE).
 
-## Acknowledgement
+## Disclaimer — use at your own risk
 
-This plugin was developed with the assistance of AI (Claude). The architecture, code, and documentation were produced through AI-assisted pair programming.
+I built this for myself. It works for my use case, but it was developed with heavy AI assistance and has **no test suite, no CI, and no formal review**. Before you point it at a real project:
+
+- Back up your `.csv` / `.po` files. The plugin overwrites translation cells; a bad model output is still a write.
+- Spot-check the output. LLMs occasionally drop placeholders (`%s`, `{name}`), invent line breaks, or "translate" things that shouldn't be translated (proper nouns, format tokens).
+- Watch your memory if you run local models — the guard helps but isn't a guarantee.
+- Treat OpenRouter / Ollama costs and rate limits as your responsibility.
+
+Issues and PRs are welcome, but this is a personal tool published as-is, not a maintained product.
