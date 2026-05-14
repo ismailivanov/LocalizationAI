@@ -1,0 +1,57 @@
+{
+	"connections": [
+		{
+			"from": "@GraphNode@25824",
+			"from_port": 0,
+			"to": "@GraphNode@25839",
+			"to_port": 0
+		},
+		{
+			"from": "@GraphNode@25839",
+			"from_port": 0,
+			"to": "@GraphNode@25815",
+			"to_port": 0
+		}
+	],
+	"nodes": [
+		{
+			"kind": "export",
+			"name": "@GraphNode@25815",
+			"pos": [
+				1080.0,
+				400.0
+			],
+			"state": {
+				"destination": "/home/carbon/Documents/localization_ai/exports",
+				"file_name": ""
+			}
+		},
+		{
+			"kind": "file_source",
+			"name": "@GraphNode@25824",
+			"pos": [
+				240.0,
+				420.0
+			],
+			"state": {
+				"file": "res://addons/localization_ai/example/game_ui.csv"
+			}
+		},
+		{
+			"kind": "translate",
+			"name": "@GraphNode@25839",
+			"pos": [
+				700.0,
+				360.0
+			],
+			"state": {
+				"api": "",
+				"model": "gpt-oss:20b",
+				"provider": 0,
+				"source_lang": "en",
+				"target_langs": "bg,da,tr"
+			}
+		}
+	],
+	"version": 1
+}

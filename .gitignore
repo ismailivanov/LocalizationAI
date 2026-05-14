@@ -1,0 +1,30 @@
+# Godot 4+ specific ignores
+.godot/
+.import/
+
+# Imported translations (generated from CSV)
+export.cfg
+export_presets.cfg
+
+# Mono-specific ignores
+.mono/
+data_*/
+mono_crash.*.json
+
+# Third-party / vendored addons (not part of this project)
+addons/godot_ai/
+addons/kenyoni/
+
+# System / editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Python cache (translate.py is stdlib-only, but just in case)
+__pycache__/
+*.py[cod]
+*.pyo

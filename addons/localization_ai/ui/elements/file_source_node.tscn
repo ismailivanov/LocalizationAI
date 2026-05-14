@@ -1,0 +1,16 @@
+[gd_scene format=3 uid="uid://cejsq4k71rays"]
+
+[ext_resource type="Script" uid="uid://d3waw1bx6y0r2" path="res://addons/localization_ai/ui/elements/file_source_node.gd" id="1_script"]
+
+[node name="FileSourceNode" type="GraphNode" unique_id=74035249]
+title = "File Source"
+slot/0/left_enabled = false
+slot/0/left_type = 0
+slot/0/left_color = Color(1, 1, 1, 1)
+slot/0/left_icon = null
+slot/0/right_enabled = true
+slot/0/right_type = 0
+slot/0/right_color = Color(0.3, 0.9, 0.5, 1)
+slot/0/right_icon = null
+slot/0/draw_stylebox = true
+script = ExtResource("1_script")

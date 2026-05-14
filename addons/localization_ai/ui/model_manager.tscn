@@ -1,0 +1,11 @@
+[gd_scene format=3 uid="uid://i9w3o5ly8rmq6"]
+
+[ext_resource type="Script" uid="uid://h8v2n4kx7qpl5" path="res://addons/localization_ai/ui/model_manager.gd" id="1_script"]
+
+[node name="ModelManager" type="MarginContainer"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_script")

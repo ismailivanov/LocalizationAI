@@ -1,0 +1,153 @@
+[gd_scene format=3 uid="uid://cga60ys5vnu7l"]
+
+[ext_resource type="Script" uid="uid://c4r8p2mn5qtk1" path="res://addons/localization_ai/ui/main.gd" id="1_main"]
+[ext_resource type="PackedScene" uid="uid://bj4di1rh4du8n" path="res://addons/localization_ai/ui/model_manager.tscn" id="2_models"]
+
+[node name="Main" type="PanelContainer" unique_id=1215797283]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+script = ExtResource("1_main")
+
+[node name="Tabs" type="TabContainer" parent="." unique_id=338387476]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+current_tab = 0
+
+[node name="Graph" type="VBoxContainer" parent="Tabs" unique_id=2101283629]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+metadata/_tab_index = 0
+
+[node name="Toolbar" type="HBoxContainer" parent="Tabs/Graph" unique_id=1314729280]
+layout_mode = 2
+
+[node name="RunBtn" type="Button" parent="Tabs/Graph/Toolbar" unique_id=964401025]
+layout_mode = 2
+text = "▶  Run"
+
+[node name="PauseBtn" type="Button" parent="Tabs/Graph/Toolbar" unique_id=1267348861]
+layout_mode = 2
+disabled = true
+text = "⏸  Pause"
+
+[node name="StopBtn" type="Button" parent="Tabs/Graph/Toolbar" unique_id=1780590897]
+layout_mode = 2
+disabled = true
+text = "⏹  Stop"
+
+[node name="VSep" type="VSeparator" parent="Tabs/Graph/Toolbar" unique_id=1789813465]
+layout_mode = 2
+
+[node name="ParallelLbl" type="Label" parent="Tabs/Graph/Toolbar" unique_id=2101010101]
+layout_mode = 2
+text = "Parallel:"
+
+[node name="ParallelSpin" type="SpinBox" parent="Tabs/Graph/Toolbar" unique_id=2101010102]
+layout_mode = 2
+min_value = 1.0
+max_value = 8.0
+value = 1.0
+tooltip_text = "Maximum number of chains running simultaneously. Keep at 1 for local Ollama (single model bottleneck); raise it only for cloud providers like OpenRouter."
+
+[node name="EtaLbl" type="Label" parent="Tabs/Graph/Toolbar" unique_id=2101010103]
+layout_mode = 2
+custom_minimum_size = Vector2(220, 0)
+text = "  ETA: —"
+
+[node name="VSep2" type="VSeparator" parent="Tabs/Graph/Toolbar" unique_id=2101010104]
+layout_mode = 2
+
+[node name="SaveBtn" type="Button" parent="Tabs/Graph/Toolbar" unique_id=1847161996]
+layout_mode = 2
+text = "Save Workflow"
+
+[node name="LoadBtn" type="Button" parent="Tabs/Graph/Toolbar" unique_id=1001714891]
+layout_mode = 2
+text = "Load Workflow"
+
+[node name="ClearGraphBtn" type="Button" parent="Tabs/Graph/Toolbar" unique_id=84224160]
+layout_mode = 2
+text = "Clear Graph"
+
+[node name="HintLbl" type="Label" parent="Tabs/Graph/Toolbar" unique_id=1365955555]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "  (right-click on graph for context menu)"
+horizontal_alignment = 2
+
+[node name="GraphEdit" type="GraphEdit" parent="Tabs/Graph" unique_id=237759598]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="OutputHeader" type="HBoxContainer" parent="Tabs/Graph" unique_id=587899927]
+layout_mode = 2
+
+[node name="Spacer" type="Control" parent="Tabs/Graph/OutputHeader" unique_id=1975780636]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="ClearBtn" type="Button" parent="Tabs/Graph/OutputHeader" unique_id=1817209738]
+layout_mode = 2
+text = "Clear Log"
+
+[node name="OutputTabs" type="TabContainer" parent="Tabs/Graph" unique_id=664105172]
+custom_minimum_size = Vector2(0, 180)
+layout_mode = 2
+size_flags_horizontal = 3
+current_tab = 0
+
+[node name="Log" type="ScrollContainer" parent="Tabs/Graph/OutputTabs" unique_id=1721880725]
+layout_mode = 2
+metadata/_tab_index = 0
+
+[node name="LogOutput" type="RichTextLabel" parent="Tabs/Graph/OutputTabs/Log" unique_id=1151206162]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+bbcode_enabled = true
+scroll_following = true
+
+[node name="Preview" type="VBoxContainer" parent="Tabs/Graph/OutputTabs" unique_id=865467842]
+visible = false
+layout_mode = 2
+metadata/_tab_index = 1
+
+[node name="PreviewHeader" type="HBoxContainer" parent="Tabs/Graph/OutputTabs/Preview" unique_id=295551668]
+layout_mode = 2
+
+[node name="PreviewLabel" type="Label" parent="Tabs/Graph/OutputTabs/Preview/PreviewHeader" unique_id=1194066351]
+layout_mode = 2
+size_flags_horizontal = 3
+text = "  (Preview will appear here after translation)"
+
+[node name="PreviewEdit" type="TextEdit" parent="Tabs/Graph/OutputTabs/Preview" unique_id=2133757558]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+editable = false
+wrap_mode = 1
+scroll_smooth = true
+
+[node name="Models" type="MarginContainer" parent="Tabs" unique_id=1385482589]
+visible = false
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+metadata/_tab_index = 1
+
+[node name="ModelManager" parent="Tabs/Models" unique_id=1204797035 instance=ExtResource("2_models")]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 12
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 12

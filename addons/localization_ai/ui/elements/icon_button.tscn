@@ -1,0 +1,29 @@
+[gd_scene format=3 uid="uid://twociex3tdak"]
+
+[ext_resource type="Script" uid="uid://c7r2bvfklx4mp" path="res://addons/localization_ai/ui/elements/icon_button.gd" id="2_script"]
+[ext_resource type="Texture2D" uid="uid://clylske4xvq5d" path="res://addons/localization_ai/icons/download_icon.svg" id="1_rutn6"]
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_normal"]
+texture = ExtResource("1_rutn6")
+modulate_color = Color(1, 1, 1, 1)
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_hover"]
+texture = ExtResource("1_rutn6")
+modulate_color = Color(0.78, 0.78, 0.78, 1)
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_pressed"]
+texture = ExtResource("1_rutn6")
+modulate_color = Color(0.42, 0.42, 0.42, 1)
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_hover_pressed"]
+texture = ExtResource("1_rutn6")
+modulate_color = Color(0.42, 0.42, 0.42, 1)
+
+[node name="IconButton" type="Button" unique_id=583618703]
+script = ExtResource("2_script")
+custom_minimum_size = Vector2(24, 24)
+icon_texture = ExtResource("1_rutn6")
+theme_override_styles/normal = SubResource("StyleBoxTexture_normal")
+theme_override_styles/hover = SubResource("StyleBoxTexture_hover")
+theme_override_styles/pressed = SubResource("StyleBoxTexture_pressed")
+theme_override_styles/hover_pressed = SubResource("StyleBoxTexture_hover_pressed")
