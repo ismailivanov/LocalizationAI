@@ -5,7 +5,7 @@ A Godot 4.7 editor plugin that translates `.csv` and `.po` localization files us
 ![Godot 4.7+](https://img.shields.io/badge/Godot-4.7%2B-478CBF?logo=godot-engine&logoColor=white)
 ![Python 3](https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-<img width="2560" height="1364" alt="image" src="https://github.com/user-attachments/assets/f4be4c91-21d9-4c38-a578-e6831f525d02" />
+<img width="2560" height="1367" alt="image" src="https://github.com/user-attachments/assets/42500718-282d-46df-af59-443f21b099fa" />
 
 ## Features
 
