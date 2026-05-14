@@ -1,34 +1,28 @@
 {
 	"connections": [
 		{
-			"from": "@GraphNode@25824",
+			"from": "@GraphNode@20584",
 			"from_port": 0,
-			"to": "@GraphNode@25839",
+			"to": "@GraphNode@20599",
 			"to_port": 0
 		},
 		{
-			"from": "@GraphNode@25839",
+			"from": "@GraphNode@20599",
 			"from_port": 0,
-			"to": "@GraphNode@25815",
+			"to": "@GraphNode@20575",
 			"to_port": 0
+		},
+		{
+			"from": "@GraphNode@20700",
+			"from_port": 0,
+			"to": "@GraphNode@20599",
+			"to_port": 1
 		}
 	],
 	"nodes": [
 		{
-			"kind": "export",
-			"name": "@GraphNode@25815",
-			"pos": [
-				1080.0,
-				400.0
-			],
-			"state": {
-				"destination": "/home/carbon/Documents/localization_ai/exports",
-				"file_name": ""
-			}
-		},
-		{
 			"kind": "file_source",
-			"name": "@GraphNode@25824",
+			"name": "@GraphNode@20584",
 			"pos": [
 				240.0,
 				420.0
@@ -39,10 +33,10 @@
 		},
 		{
 			"kind": "translate",
-			"name": "@GraphNode@25839",
+			"name": "@GraphNode@20599",
 			"pos": [
-				700.0,
-				360.0
+				640.0,
+				420.0
 			],
 			"state": {
 				"api": "",
@@ -50,6 +44,30 @@
 				"provider": 0,
 				"source_lang": "en",
 				"target_langs": "bg,da,tr"
+			}
+		},
+		{
+			"kind": "export",
+			"name": "@GraphNode@20575",
+			"pos": [
+				1140.0,
+				780.0
+			],
+			"state": {
+				"destination": "/home/carbon/Documents/localization_ai/exports",
+				"file_name": ""
+			}
+		},
+		{
+			"kind": "prompt",
+			"name": "@GraphNode@20700",
+			"pos": [
+				220.0,
+				660.0
+			],
+			"state": {
+				"prompt": "Don’t forget that this is a medieval-themed game; translate all the dialogue accordingly. Also, don’t translate the words inside the {} brackets—those are commands for the game.",
+				"scope_idx": 0
 			}
 		}
 	],
