@@ -82,5 +82,3 @@ I built this for myself. It works for my use case, but it was developed with hea
 - Spot-check the output. LLMs occasionally drop placeholders (`%s`, `{name}`), invent line breaks, or "translate" things that shouldn't be translated (proper nouns, format tokens).
 - Watch your memory if you run local models — the guard helps but isn't a guarantee.
 - Treat OpenRouter / Ollama costs and rate limits as your responsibility.
-
-Issues and PRs are welcome, but this is a personal tool published as-is, not a maintained product.
