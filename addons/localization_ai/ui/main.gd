@@ -100,6 +100,8 @@ func _ready() -> void:
 	_eta_timer.timeout.connect(_refresh_eta)
 	add_child(_eta_timer)
 
+	_build_settings_button()
+
 	_log_line("[color=gray]=== Localization AI ready ===[/color]")
 	_log_line("[color=gray]Right-click the graph to add nodes.[/color]")
 
@@ -134,10 +136,16 @@ func _on_pause_all() -> void:
 
 
 func _on_stop_all() -> void:
+	# Drop queued chains so finishing the current file doesn't kick off the next.
+	var dropped := _chains_queue.size()
+	_chains_queue.clear()
+	_run_active = false
 	for child in _graph.get_children():
 		if child.has_method("is_running") and child.is_running():
 			if child.has_method("stop_translation"):
 				child.stop_translation()
+	if dropped > 0:
+		_log_line("[color=red]⏹  Stop — discarded %d queued file(s)[/color]" % dropped)
 	_log_line("[color=red]⏹  Stop requested for all translations[/color]")
 	_pause_btn.disabled = true
 	_stop_btn.disabled = true
@@ -709,6 +717,271 @@ func _update_workflow_label() -> void:
 	if _hint_lbl == null:
 		return
 	if _current_workflow_path.is_empty():
-		_hint_lbl.text = "  (unsaved workflow — right-click graph for context menu)"
+		_hint_lbl.text = ""
+		_hint_lbl.visible = false
 	else:
 		_hint_lbl.text = "  📁 %s" % _current_workflow_path.get_file()
+		_hint_lbl.visible = true
+
+
+# ── Settings popup + GitHub update check ─────────────────────────────────────
+
+const PLUGIN_CFG_PATH := "res://addons/localization_ai/plugin.cfg"
+const GITHUB_REPO := "ismailivanov/LocalizationAI"
+const GITHUB_RELEASES_URL := "https://github.com/" + GITHUB_REPO + "/releases"
+const GITHUB_API_LATEST := "https://api.github.com/repos/" + GITHUB_REPO + "/releases/latest"
+
+var _settings_window: AcceptDialog
+var _about_status_lbl: Label
+var _about_check_btn: Button
+var _about_open_btn: Button
+var _about_http: HTTPRequest
+var _about_latest_url: String = ""
+
+
+func _build_settings_button() -> void:
+	if _run_btn == null:
+		return
+	var toolbar: Node = _run_btn.get_parent()
+	if toolbar == null:
+		return
+
+	# HintLbl shows the loaded workflow filename; hide it when nothing is loaded
+	# so the toolbar doesn't show a stray "(unsaved…)" snippet next to Settings.
+	if _hint_lbl != null:
+		_hint_lbl.size_flags_horizontal = Control.SIZE_FILL
+		_hint_lbl.clip_text = true
+		_hint_lbl.visible = false
+
+	# Spacer absorbs leftover space → version + Settings sit at the right edge.
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	toolbar.add_child(spacer)
+
+	var ver_lbl := Label.new()
+	ver_lbl.text = "v%s" % _current_version()
+	ver_lbl.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	ver_lbl.tooltip_text = "LocalizationAI version"
+	toolbar.add_child(ver_lbl)
+
+	var btn := Button.new()
+	btn.text = "⚙  Settings"
+	btn.tooltip_text = "About & update check"
+	btn.pressed.connect(_open_settings_window)
+	toolbar.add_child(btn)
+
+	_about_http = HTTPRequest.new()
+	_about_http.request_completed.connect(_on_update_check_done)
+	add_child(_about_http)
+
+
+func _open_settings_window() -> void:
+	if _settings_window == null:
+		_settings_window = _build_settings_window()
+		add_child(_settings_window)
+	_settings_window.popup_centered(Vector2i(560, 360))
+
+
+func _build_settings_window() -> AcceptDialog:
+	var dlg := AcceptDialog.new()
+	dlg.title = "Settings — LocalizationAI"
+
+	var pad := MarginContainer.new()
+	pad.add_theme_constant_override("margin_left", 18)
+	pad.add_theme_constant_override("margin_right", 18)
+	pad.add_theme_constant_override("margin_top", 12)
+	pad.add_theme_constant_override("margin_bottom", 12)
+	dlg.add_child(pad)
+
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 10)
+	pad.add_child(vb)
+
+	var info := _read_plugin_info()
+
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 14)
+	vb.add_child(header)
+
+	var icon_tex: Texture2D = load("res://addons/localization_ai/icon.svg") as Texture2D
+	if icon_tex != null:
+		var icon_rect := TextureRect.new()
+		icon_rect.texture = icon_tex
+		icon_rect.custom_minimum_size = Vector2(128, 128)
+		icon_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		icon_rect.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+		header.add_child(icon_rect)
+
+	var title_vb := VBoxContainer.new()
+	title_vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(title_vb)
+
+	var title_lbl := Label.new()
+	title_lbl.text = str(info.get("name", "LocalizationAI"))
+	title_lbl.add_theme_font_size_override("font_size", 20)
+	title_vb.add_child(title_lbl)
+
+	var ver_lbl := Label.new()
+	ver_lbl.text = "Version  %s" % str(info.get("version", "?"))
+	title_vb.add_child(ver_lbl)
+
+	var author_lbl := Label.new()
+	author_lbl.text = "Author   %s" % str(info.get("author", "?"))
+	title_vb.add_child(author_lbl)
+
+	var desc_lbl := Label.new()
+	desc_lbl.text = str(info.get("description", ""))
+	desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	desc_lbl.custom_minimum_size = Vector2(500, 0)
+	desc_lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
+	vb.add_child(desc_lbl)
+
+	vb.add_child(HSeparator.new())
+
+	var repo_lbl := Label.new()
+	repo_lbl.text = "GitHub: " + GITHUB_REPO
+	vb.add_child(repo_lbl)
+
+	var btn_row := HBoxContainer.new()
+	btn_row.add_theme_constant_override("separation", 10)
+	vb.add_child(btn_row)
+
+	_about_check_btn = Button.new()
+	_about_check_btn.text = "🔄  Check for updates"
+	_about_check_btn.pressed.connect(_check_for_updates)
+	btn_row.add_child(_about_check_btn)
+
+	var repo_btn := Button.new()
+	repo_btn.text = "🌐  Open GitHub"
+	repo_btn.pressed.connect(_open_github_repo)
+	btn_row.add_child(repo_btn)
+
+	_about_open_btn = Button.new()
+	_about_open_btn.text = "⬇  Open latest release"
+	_about_open_btn.visible = false
+	_about_open_btn.pressed.connect(_open_latest_release)
+	btn_row.add_child(_about_open_btn)
+
+	_about_status_lbl = Label.new()
+	_about_status_lbl.text = ""
+	_about_status_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_about_status_lbl.custom_minimum_size = Vector2(500, 0)
+	vb.add_child(_about_status_lbl)
+
+	return dlg
+
+
+func _read_plugin_info() -> Dictionary:
+	var cfg := ConfigFile.new()
+	var out := {
+		"name": "LocalizationAI",
+		"version": "0.0.0",
+		"author": "",
+		"description": "",
+	}
+	if cfg.load(PLUGIN_CFG_PATH) != OK:
+		return out
+	for key in out.keys():
+		var v = cfg.get_value("plugin", key, out[key])
+		out[key] = v
+	return out
+
+
+func _current_version() -> String:
+	return str(_read_plugin_info().get("version", "0.0.0"))
+
+
+func _open_github_repo() -> void:
+	OS.shell_open("https://github.com/" + GITHUB_REPO)
+
+
+func _open_latest_release() -> void:
+	if not _about_latest_url.is_empty():
+		OS.shell_open(_about_latest_url)
+
+
+func _check_for_updates() -> void:
+	if _about_http == null:
+		return
+	_about_status_lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
+	_about_status_lbl.text = "Checking GitHub…"
+	_about_open_btn.visible = false
+	_about_check_btn.disabled = true
+	var headers := ["Accept: application/vnd.github+json", "User-Agent: LocalizationAI"]
+	var err := _about_http.request(GITHUB_API_LATEST, headers)
+	if err != OK:
+		_about_check_btn.disabled = false
+		_about_status_lbl.add_theme_color_override("font_color", Color(1, 0.5, 0.5))
+		_about_status_lbl.text = "Request failed to start (error %d)." % err
+
+
+func _on_update_check_done(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	_about_check_btn.disabled = false
+	if result != HTTPRequest.RESULT_SUCCESS:
+		_about_status_lbl.add_theme_color_override("font_color", Color(1, 0.5, 0.5))
+		_about_status_lbl.text = "Network error (result %d). Check your connection." % result
+		return
+	if code == 404:
+		_about_status_lbl.add_theme_color_override("font_color", Color(1, 0.8, 0.4))
+		_about_status_lbl.text = "No releases published yet on GitHub."
+		return
+	if code != 200:
+		_about_status_lbl.add_theme_color_override("font_color", Color(1, 0.5, 0.5))
+		_about_status_lbl.text = "GitHub returned HTTP %d." % code
+		return
+
+	var parser := JSON.new()
+	if parser.parse(body.get_string_from_utf8()) != OK:
+		_about_status_lbl.add_theme_color_override("font_color", Color(1, 0.5, 0.5))
+		_about_status_lbl.text = "Could not parse GitHub response."
+		return
+	var data: Dictionary = parser.get_data()
+	var tag := str(data.get("tag_name", "")).strip_edges()
+	_about_latest_url = str(data.get("html_url", GITHUB_RELEASES_URL))
+	if tag.is_empty():
+		_about_status_lbl.add_theme_color_override("font_color", Color(1, 0.8, 0.4))
+		_about_status_lbl.text = "Latest release has no tag."
+		return
+
+	var current := _current_version()
+	var cmp := _compare_versions(tag, current)
+	if cmp > 0:
+		_about_status_lbl.add_theme_color_override("font_color", Color(0.4, 0.95, 0.55))
+		_about_status_lbl.text = "Update available: %s  (you have %s)" % [tag, current]
+		_about_open_btn.visible = true
+	elif cmp == 0:
+		_about_status_lbl.add_theme_color_override("font_color", Color(0.55, 0.75, 1.0))
+		_about_status_lbl.text = "You are on the latest version (%s)." % current
+	else:
+		_about_status_lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
+		_about_status_lbl.text = "Your version (%s) is ahead of the latest release (%s)." % [current, tag]
+
+
+# Returns 1 if a > b, -1 if a < b, 0 if equal. Strips a leading 'v', compares
+# dot-separated integer parts; non-numeric parts fall back to string compare.
+static func _compare_versions(a: String, b: String) -> int:
+	var ap := _parse_version(a)
+	var bp := _parse_version(b)
+	var n := max(ap.size(), bp.size())
+	for i in n:
+		var av: int = ap[i] if i < ap.size() else 0
+		var bv: int = bp[i] if i < bp.size() else 0
+		if av > bv: return 1
+		if av < bv: return -1
+	return 0
+
+
+static func _parse_version(s: String) -> Array:
+	var t := s.strip_edges().to_lower()
+	if t.begins_with("v"):
+		t = t.substr(1)
+	# Strip pre-release/build suffix (e.g. 1.2.3-beta+ci).
+	var dash := t.find("-")
+	if dash >= 0: t = t.substr(0, dash)
+	var plus := t.find("+")
+	if plus >= 0: t = t.substr(0, plus)
+	var parts := t.split(".")
+	var out: Array = []
+	for p in parts:
+		out.append(int(p))
+	return out

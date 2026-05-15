@@ -135,10 +135,27 @@ func run() -> String:
 	if err != OK:
 		return "copy failed (error %d)" % err
 
+	# Remove the intermediate file written next to the input CSV — Translate
+	# writes <stem>_translated.<ext> / <stem>_progress.<ext> beside the source,
+	# but once it lands in the export destination we don't want a duplicate
+	# polluting the original folder.
+	var src_lower := src_file.to_lower()
+	if src_lower.ends_with("_translated." + ext) or src_lower.ends_with("_progress." + ext):
+		DirAccess.remove_absolute(src)
+
 	_output_file = dest
 	_status.text = "Exported:\n" + dest
 	log_message.emit("Export: saved  →  " + dest)
+	_rescan_filesystem()
 	return ""
+
+
+func _rescan_filesystem() -> void:
+	if not Engine.is_editor_hint():
+		return
+	var fs := EditorInterface.get_resource_filesystem()
+	if fs:
+		fs.scan()
 
 
 # ── Directory picker ──────────────────────────────────────────────────────────

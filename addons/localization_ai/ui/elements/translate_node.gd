@@ -623,7 +623,16 @@ func _run_translation() -> void:
 	var script := ProjectSettings.globalize_path("res://addons/localization_ai/scripts/translate.py")
 	var input_g := ProjectSettings.globalize_path(_input_file)
 	var ext := _input_file.get_extension()
-	var base := input_g.trim_suffix("." + ext).trim_suffix("_progress").trim_suffix("_translated")
+	# Write the intermediate translated/partial file into user:// so it never
+	# pollutes the source folder (and never triggers Godot's CSV-translation
+	# auto-import, which leaves orphan .import / .translation sidecars behind).
+	# The Export node picks this up via translation_done and copies it to the
+	# user-chosen destination.
+	var tmp_dir := OS.get_user_data_dir().path_join("localization_ai_out")
+	DirAccess.make_dir_recursive_absolute(tmp_dir)
+	var src_stem := _input_file.get_file().get_basename() \
+			.trim_suffix("_progress").trim_suffix("_translated")
+	var base := tmp_dir.path_join("%s_%d" % [src_stem, Time.get_ticks_msec()])
 	var out_g := base + "_translated." + ext
 	var stopped_g := base + "_progress." + ext
 

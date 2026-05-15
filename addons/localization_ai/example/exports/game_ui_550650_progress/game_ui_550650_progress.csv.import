@@ -1,0 +1,19 @@
+[remap]
+
+importer="csv_translation"
+type="Translation"
+uid="uid://c7gfs7le0q8h1"
+
+[deps]
+
+files=["res://addons/localization_ai/example/exports/game_ui_550650_progress/game_ui_550650_progress.en.translation", "res://addons/localization_ai/example/exports/game_ui_550650_progress/game_ui_550650_progress.da.translation", "res://addons/localization_ai/example/exports/game_ui_550650_progress/game_ui_550650_progress.tr.translation"]
+
+source_file="res://addons/localization_ai/example/exports/game_ui_550650_progress/game_ui_550650_progress.csv"
+dest_files=["res://addons/localization_ai/example/exports/game_ui_550650_progress/game_ui_550650_progress.en.translation", "res://addons/localization_ai/example/exports/game_ui_550650_progress/game_ui_550650_progress.da.translation", "res://addons/localization_ai/example/exports/game_ui_550650_progress/game_ui_550650_progress.tr.translation"]
+
+[params]
+
+compress=1
+delimiter=0
+unescape_keys=false
+unescape_translations=true

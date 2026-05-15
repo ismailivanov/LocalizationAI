@@ -2,6 +2,7 @@
 extends EditorPlugin
 
 const MAIN_SCENE = preload("res://addons/localization_ai/ui/main.tscn")
+const LOCALIZATION_ICON = preload("uid://cmv5e7ji2cr2o")
 
 var _main_panel: Control
 
@@ -15,7 +16,7 @@ func _get_plugin_name() -> String:
 
 
 func _get_plugin_icon() -> Texture2D:
-	return null
+	return LOCALIZATION_ICON
 
 func _make_visible(visible: bool) -> void:
 	if _main_panel:

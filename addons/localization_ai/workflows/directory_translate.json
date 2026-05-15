@@ -1,0 +1,59 @@
+{
+	"connections": [
+		{
+			"from": "@GraphNode@20865",
+			"from_port": 0,
+			"to": "@GraphNode@21095",
+			"to_port": 0
+		},
+		{
+			"from": "@GraphNode@21095",
+			"from_port": 0,
+			"to": "@GraphNode@21158",
+			"to_port": 0
+		}
+	],
+	"nodes": [
+		{
+			"kind": "translate",
+			"name": "@GraphNode@21095",
+			"pos": [
+				860.0,
+				300.0
+			],
+			"state": {
+				"api": "",
+				"model": "gpt-oss:20b",
+				"provider": 0,
+				"source_lang": "en",
+				"target_langs": "da,tr"
+			}
+		},
+		{
+			"kind": "export",
+			"name": "@GraphNode@21158",
+			"pos": [
+				1260.0,
+				580.0
+			],
+			"state": {
+				"destination": "/home/carbon/Documents/GitHub/LocalizationAI/addons/localization_ai/example/exports",
+				"file_name": ""
+			}
+		},
+		{
+			"kind": "directory_source",
+			"name": "@GraphNode@20865",
+			"pos": [
+				380.0,
+				300.0
+			],
+			"state": {
+				"directory": "/home/carbon/Documents/GitHub/LocalizationAI/addons/localization_ai/example",
+				"filter": 0,
+				"recursive": true
+			}
+		}
+	],
+	"version": 1
+}

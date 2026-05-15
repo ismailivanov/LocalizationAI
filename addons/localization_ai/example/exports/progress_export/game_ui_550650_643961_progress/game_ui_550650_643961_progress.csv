@@ -1,0 +1,27 @@
+key,en,da,tr
+CONTINUE_BUTTON,Continue,Fortsæt,Devam
+NEW_GAME_BUTTON,New Game,Nyt Spil,Yeni Oyun
+LOAD_GAME_BUTTON,Load Game,Indlæs Spil,Oyun Yükle
+SETTINGS_BUTTON,Settings,Indstillinger,Ayarlar
+GALLERY_BUTTON,Gallery,Galleri,Galeri
+CHANGELOG_BUTTON,Changelog,Ændringslog,Değişiklik Günlüğü
+EXIT_BUTTON,Exit,Afslut,Çıkış
+GAME_VER,Game Ver.,Spilversion.,Oyun Sürümü.
+LATEST_VERSION,Latest game version:,Seneste spilversion:,En son oyun sürümü:
+JOIN_COMMUNITY,Join our Community!,Deltag i vores fællesskab!,Topluluğumuza Katıl!
+WEEKDAY_MON,Mon,Mandag,Pzt
+WEEKDAY_TUE,Tue,Tir,Sal
+WEEKDAY_WED,Wed,Ons,Çarşamba
+WEEKDAY_THU,Thu,tors.,Per
+WEEKDAY_FRI,Fri,Fri,Cmt
+WEEKDAY_SAT,Sat,La.,Sat
+WEEKDAY_SUN,Sun,Sol,Güneş
+CREDITS_MENU,Credits,Kreditter,Krediler
+BACK_BTN,Back,,
+NEXT_BTN,Next,,
+PREVIOUS_BTN,Previous,,
+CLOSE_BTN,Close,,
+ACHIVEMENTS_BUTTON,Achievements,,
+COMPLETE_TASK,Complete Task,,
+COMPLETE_QUEST,Complete Quest,,
+QUEST_COMPLETE,Quest Completed,,

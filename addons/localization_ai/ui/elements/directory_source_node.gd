@@ -12,9 +12,11 @@ var _recursive_chk: CheckBox
 var _filter: OptionButton
 var _refresh_btn: Button
 var _status: Label
+var _start_from: OptionButton
 
 var _dir_dialog: EditorFileDialog
 var _files: Array[String] = []
+var _start_from_path: String = ""
 
 
 func _init() -> void:
@@ -57,6 +59,16 @@ func _ready() -> void:
 	_refresh_btn.pressed.connect(_scan)
 	add_child(_refresh_btn)
 
+	var start_row := HBoxContainer.new()
+	var start_lbl := Label.new()
+	start_lbl.text = "Start from:"
+	start_row.add_child(start_lbl)
+	_start_from = OptionButton.new()
+	_start_from.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_start_from.item_selected.connect(_on_start_from_selected)
+	start_row.add_child(_start_from)
+	add_child(start_row)
+
 	_status = Label.new()
 	_status.text = "Pick a directory"
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -72,15 +84,32 @@ func _ready() -> void:
 func get_files() -> Array[String]:
 	# Always rescan on demand so edits to disk between connection and Run are picked up.
 	_scan()
-	return _files.duplicate()
+	return _files_from_start()
 
 
 func get_selected_file() -> String:
-	# Used by main.gd at connection-time to populate the Translate node's
-	# source-language dropdown. Return the first file as a representative sample.
 	if _files.is_empty():
 		_scan()
-	return _files[0] if not _files.is_empty() else ""
+	var sliced := _files_from_start()
+	return sliced[0] if not sliced.is_empty() else ""
+
+
+func _files_from_start() -> Array[String]:
+	if _files.is_empty():
+		return []
+	var idx := _files.find(_start_from_path)
+	if idx <= 0:
+		return _files.duplicate()
+	var out: Array[String] = []
+	for i in range(idx, _files.size()):
+		out.append(_files[i])
+	return out
+
+
+func _on_start_from_selected(i: int) -> void:
+	if i >= 0 and i < _files.size():
+		_start_from_path = _files[i]
+		_propagate_first_file()
 
 
 # ── Scanning ─────────────────────────────────────────────────────────────────
@@ -117,13 +146,31 @@ func _scan() -> void:
 	else:
 		_status.text = "%d file(s) found" % _files.size()
 
+	_rebuild_start_from()
 	_propagate_first_file()
 
 
-# Push the first file to any downstream Translate node so its source-language
-# dropdown populates even if the user picked the directory after wiring the edge.
-func _propagate_first_file() -> void:
+func _rebuild_start_from() -> void:
+	if _start_from == null:
+		return
+	_start_from.clear()
 	if _files.is_empty():
+		_start_from.add_item("(no files)")
+		_start_from.disabled = true
+		return
+	_start_from.disabled = false
+	var select_idx := 0
+	for i in _files.size():
+		_start_from.add_item(_files[i].get_file())
+		if _files[i] == _start_from_path:
+			select_idx = i
+	_start_from.select(select_idx)
+	_start_from_path = _files[select_idx]
+
+
+func _propagate_first_file() -> void:
+	var sliced := _files_from_start()
+	if sliced.is_empty():
 		return
 	var parent := get_parent()
 	if parent == null or not parent.has_method("get_connection_list"):
@@ -133,7 +180,7 @@ func _propagate_first_file() -> void:
 			continue
 		var dst := parent.get_node_or_null(NodePath(String(conn.to_node)))
 		if dst and dst.has_method("set_input_file"):
-			dst.set_input_file(_files[0])
+			dst.set_input_file(sliced[0])
 
 
 func _collect_files(abs_dir: String, exts: Array, recursive: bool, out: Array[String]) -> void:
@@ -179,9 +226,10 @@ func _open_dir_dialog() -> void:
 
 func save_state() -> Dictionary:
 	return {
-		"directory": _dir_input.text,
-		"recursive": _recursive_chk.button_pressed,
-		"filter":    _filter.selected,
+		"directory":  _dir_input.text,
+		"recursive":  _recursive_chk.button_pressed,
+		"filter":     _filter.selected,
+		"start_from": _start_from_path,
 	}
 
 
@@ -191,5 +239,6 @@ func load_state(data: Dictionary) -> void:
 	var f := int(data.get("filter", 0))
 	if f >= 0 and f < _filter.item_count:
 		_filter.select(f)
+	_start_from_path = str(data.get("start_from", ""))
 	if not _dir_input.text.is_empty():
 		_scan()
