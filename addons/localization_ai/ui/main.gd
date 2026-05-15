@@ -730,6 +730,8 @@ const PLUGIN_CFG_PATH := "res://addons/localization_ai/plugin.cfg"
 const GITHUB_REPO := "ismailivanov/LocalizationAI"
 const GITHUB_RELEASES_URL := "https://github.com/" + GITHUB_REPO + "/releases"
 const GITHUB_API_LATEST := "https://api.github.com/repos/" + GITHUB_REPO + "/releases/latest"
+const DONATE_URL := "https://buymeacoffee.com/carbon06"
+const LOGO_CREDIT_URL := "https://www.behance.net/warcedesign"
 
 var _settings_window: AcceptDialog
 var _about_status_lbl: Label
@@ -867,6 +869,24 @@ func _build_settings_window() -> AcceptDialog:
 	_about_status_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_about_status_lbl.custom_minimum_size = Vector2(500, 0)
 	vb.add_child(_about_status_lbl)
+
+	vb.add_child(HSeparator.new())
+
+	var credits_row := HBoxContainer.new()
+	credits_row.add_theme_constant_override("separation", 10)
+	vb.add_child(credits_row)
+
+	var donate_btn := Button.new()
+	donate_btn.text = "☕  Buy me a coffee"
+	donate_btn.tooltip_text = DONATE_URL
+	donate_btn.pressed.connect(func() -> void: OS.shell_open(DONATE_URL))
+	credits_row.add_child(donate_btn)
+
+	var logo_btn := Button.new()
+	logo_btn.text = "🎨  Logo by warcedesign"
+	logo_btn.tooltip_text = LOGO_CREDIT_URL
+	logo_btn.pressed.connect(func() -> void: OS.shell_open(LOGO_CREDIT_URL))
+	credits_row.add_child(logo_btn)
 
 	return dlg
 
