@@ -34,6 +34,7 @@ var _node_counter := 0
 var _save_dialog: EditorFileDialog
 var _load_dialog: EditorFileDialog
 var _current_workflow_path: String = ""
+var _welcome_panel: Control = null
 
 # Parallel chain scheduler + ETA tracker
 var _chains_queue: Array = []
@@ -106,6 +107,9 @@ func _ready() -> void:
 	_log_line("[color=gray]=== Localization AI ready ===[/color]")
 	_log_line("[color=gray]Right-click the graph to add nodes.[/color]")
 	_report_orphan_partials()
+	# Show the workflow picker on first open (when the graph is empty). Loading
+	# a workflow or pressing "Start blank" dismisses it.
+	call_deferred("_maybe_show_welcome")
 
 
 # ── Pause / Stop (toolbar) ───────────────────────────────────────────────────
@@ -463,6 +467,132 @@ func _on_delete_nodes_request(nodes: Array[StringName]) -> void:
 		if node:
 			node.queue_free()
 	_log_line("[color=gray]› Deleted %d node(s)[/color]" % nodes.size())
+
+
+# ── Welcome panel (first-open workflow picker) ───────────────────────────────
+
+func _has_graph_nodes() -> bool:
+	if _graph == null:
+		return false
+	for child in _graph.get_children():
+		if child is GraphNode:
+			return true
+	return false
+
+
+func _maybe_show_welcome() -> void:
+	if _welcome_panel != null or _has_graph_nodes() or _body_split == null:
+		return
+	_welcome_panel = _build_welcome_panel()
+	_welcome_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_welcome_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# Put the welcome panel in Tabs/Graph (the outer VBox) just above the body
+	# splitter, then hide the splitter so the picker takes the full canvas
+	# without disturbing the splitter's GraphEdit/Log children.
+	var graph_vb: Node = _body_split.get_parent()
+	graph_vb.add_child(_welcome_panel)
+	graph_vb.move_child(_welcome_panel, _body_split.get_index())
+	_body_split.visible = false
+
+
+func _dismiss_welcome() -> void:
+	if _welcome_panel == null:
+		return
+	_welcome_panel.queue_free()
+	_welcome_panel = null
+	if _body_split != null:
+		_body_split.visible = true
+
+
+func _build_welcome_panel() -> Control:
+	var root := PanelContainer.new()
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
+	var center := CenterContainer.new()
+	center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	center.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_child(center)
+
+	var col := VBoxContainer.new()
+	col.custom_minimum_size = Vector2(420, 0)
+	col.add_theme_constant_override("separation", 8)
+	center.add_child(col)
+
+	var title := Label.new()
+	title.text = "👋  Welcome to LocalizationAI"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 22)
+	col.add_child(title)
+
+	var subtitle := Label.new()
+	subtitle.text = "Pick a starter workflow or begin with an empty graph."
+	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	subtitle.add_theme_color_override("font_color", Color(0.7, 0.7, 0.75))
+	col.add_child(subtitle)
+
+	var spacer1 := Control.new()
+	spacer1.custom_minimum_size = Vector2(0, 12)
+	col.add_child(spacer1)
+
+	# One button per workflow JSON shipped with the plugin (and any the user
+	# has saved alongside them).
+	var workflows := _list_workflows()
+	if workflows.is_empty():
+		var none := Label.new()
+		none.text = "(no starter workflows found in %s)" % WORKFLOW_DIR
+		none.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		none.add_theme_color_override("font_color", Color(0.7, 0.55, 0.55))
+		col.add_child(none)
+	else:
+		for path in workflows:
+			var btn := Button.new()
+			btn.text = "📁  %s" % path.get_file().get_basename()
+			btn.tooltip_text = path
+			btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			btn.pressed.connect(_on_welcome_workflow_pressed.bind(path))
+			col.add_child(btn)
+
+	var spacer2 := Control.new()
+	spacer2.custom_minimum_size = Vector2(0, 16)
+	col.add_child(spacer2)
+
+	var blank_btn := Button.new()
+	blank_btn.text = "Start with an empty graph"
+	blank_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	blank_btn.pressed.connect(_dismiss_welcome)
+	col.add_child(blank_btn)
+
+	var hint := Label.new()
+	hint.text = "You can reopen this picker any time by clearing the graph."
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_color_override("font_color", Color(0.55, 0.55, 0.6))
+	hint.add_theme_font_size_override("font_size", 11)
+	col.add_child(hint)
+
+	return root
+
+
+func _on_welcome_workflow_pressed(path: String) -> void:
+	_dismiss_welcome()
+	_do_load_workflow(path)
+
+
+func _list_workflows() -> Array[String]:
+	var out: Array[String] = []
+	var abs := ProjectSettings.globalize_path(WORKFLOW_DIR)
+	var dir := DirAccess.open(abs)
+	if dir == null:
+		return out
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		if not dir.current_is_dir() and entry.to_lower().ends_with(".json"):
+			out.append(WORKFLOW_DIR + "/" + entry)
+		entry = dir.get_next()
+	dir.list_dir_end()
+	out.sort()
+	return out
 
 
 # ── Graph lock (no edits while a translation is running) ─────────────────────
@@ -879,6 +1009,7 @@ func _load_workflow() -> void:
 
 
 func _do_load_workflow(path: String) -> void:
+	_dismiss_welcome()
 	var abs := ProjectSettings.globalize_path(path)
 	var file := FileAccess.open(abs, FileAccess.READ)
 	if file == null:
@@ -953,6 +1084,9 @@ func _clear_graph() -> void:
 			child.queue_free()
 	_current_workflow_path = ""
 	_update_workflow_label()
+	# Bring the picker back so the user can grab a starter workflow without
+	# digging through Load Workflow.
+	call_deferred("_maybe_show_welcome")
 
 
 # ── Log ───────────────────────────────────────────────────────────────────────
