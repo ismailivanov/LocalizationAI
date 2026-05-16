@@ -9,8 +9,6 @@ const PromptScript          = preload("res://addons/localization_ai/ui/elements/
 
 @onready var _graph: GraphEdit       = $Tabs/Graph/GraphEdit
 @onready var _log: RichTextLabel     = $Tabs/Graph/OutputTabs/Log/LogOutput
-@onready var _preview: TextEdit      = $Tabs/Graph/OutputTabs/Preview/PreviewEdit
-@onready var _preview_label: Label   = $Tabs/Graph/OutputTabs/Preview/PreviewHeader/PreviewLabel
 @onready var _output_tabs: TabContainer = $Tabs/Graph/OutputTabs
 @onready var _run_btn:    Button     = $Tabs/Graph/Toolbar/RunBtn
 @onready var _pause_btn:  Button     = $Tabs/Graph/Toolbar/PauseBtn
@@ -41,6 +39,7 @@ var _current_workflow_path: String = ""
 var _chains_queue: Array = []
 var _active_chains: int = 0
 var _run_active: bool = false
+var _graph_locked: bool = false
 var _eta_start_ms: int = 0
 var _eta_baseline_done: int = 0
 # Per-translate-node progress snapshots:  name → {"current": int, "total": int}
@@ -101,9 +100,12 @@ func _ready() -> void:
 	add_child(_eta_timer)
 
 	_build_settings_button()
+	_install_body_splitter()
+	_setup_status_border()
 
 	_log_line("[color=gray]=== Localization AI ready ===[/color]")
 	_log_line("[color=gray]Right-click the graph to add nodes.[/color]")
+	_report_orphan_partials()
 
 
 # ── Pause / Stop (toolbar) ───────────────────────────────────────────────────
@@ -157,11 +159,184 @@ func _update_toolbar_buttons() -> void:
 		if child.has_method("is_running") and child.is_running():
 			any_running = true
 			break
+	# Pipeline is "active" as long as either a node is mid-translation or there
+	# are still queued chains waiting to start. A naive per-node check flips the
+	# UI back to "done" between files when a Directory Source has more queued.
+	var pipeline_active := _run_active or any_running or not _chains_queue.is_empty()
 	_pause_btn.disabled = not any_running
-	_stop_btn.disabled = not any_running
-	_run_btn.disabled = any_running
+	_stop_btn.disabled = not pipeline_active
+	_run_btn.disabled = pipeline_active
 	if not any_running:
 		_pause_btn.text = "⏸  Pause"
+	_set_graph_locked(pipeline_active)
+	_refresh_status_border()
+
+
+# ── Status border (green = running, orange = paused) ─────────────────────────
+
+var _default_panel_style: StyleBox = null
+
+func _setup_status_border() -> void:
+	_default_panel_style = get_theme_stylebox("panel", "PanelContainer")
+	_refresh_status_border()
+
+
+func _refresh_status_border() -> void:
+	var any_running := false
+	var any_paused := false
+	for child in _graph.get_children():
+		if not (child.has_method("is_running") and child.is_running()):
+			continue
+		any_running = true
+		if child.has_method("is_paused") and child.is_paused():
+			any_paused = true
+
+	# Border stays on for the whole pipeline, not just per-node — otherwise it
+	# flickers off between files when a Directory Source has more queued.
+	var pipeline_active := _run_active or any_running or not _chains_queue.is_empty()
+	if not pipeline_active:
+		remove_theme_stylebox_override("panel")
+		return
+
+	var color := Color(1.0, 0.6, 0.2) if any_paused else Color(0.35, 0.85, 0.45)
+	var style := StyleBoxFlat.new()
+	if _default_panel_style is StyleBoxFlat:
+		var src: StyleBoxFlat = _default_panel_style
+		style.bg_color = src.bg_color
+	else:
+		style.bg_color = Color(0, 0, 0, 0)
+		style.draw_center = false
+	style.border_width_left = 3
+	style.border_width_top = 3
+	style.border_width_right = 3
+	style.border_width_bottom = 3
+	style.border_color = color
+	style.corner_radius_top_left = 4
+	style.corner_radius_top_right = 4
+	style.corner_radius_bottom_left = 4
+	style.corner_radius_bottom_right = 4
+	add_theme_stylebox_override("panel", style)
+
+
+# ── Resizable bottom panel (GraphEdit ↕ Log) ─────────────────────────────────
+
+func _install_body_splitter() -> void:
+	var graph_vb: Node = _graph.get_parent()
+	var output_header: Node = _clear_btn.get_parent()
+	if graph_vb == null or output_header == null:
+		return
+
+	var graph_idx := _graph.get_index()
+	graph_vb.remove_child(_graph)
+	graph_vb.remove_child(output_header)
+	graph_vb.remove_child(_output_tabs)
+
+	_body_split = VSplitContainer.new()
+	_body_split.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_body_split.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	graph_vb.add_child(_body_split)
+	graph_vb.move_child(_body_split, graph_idx)
+
+	_graph.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_body_split.add_child(_graph)
+
+	_body_bottom = VBoxContainer.new()
+	_body_bottom.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_body_bottom.size_flags_vertical = Control.SIZE_FILL
+	_body_bottom.custom_minimum_size = Vector2(0, 120)
+	_body_split.add_child(_body_bottom)
+	_body_bottom.add_child(output_header)
+	_body_bottom.add_child(_output_tabs)
+	_output_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
+	# Drag handle nudges the bottom panel up; negative offset pulls split up.
+	_body_split.split_offset = -220
+	_saved_split_offset = _body_split.split_offset
+
+	# Collapse / expand toggle, mimicking Godot's bottom-dock show/hide button.
+	_toggle_btn = Button.new()
+	_toggle_btn.text = "▾"
+	_toggle_btn.flat = true
+	_toggle_btn.tooltip_text = "Hide log panel"
+	_toggle_btn.pressed.connect(_toggle_bottom_panel)
+	output_header.add_child(_toggle_btn)
+	output_header.move_child(_toggle_btn, 0)
+
+
+var _body_split: VSplitContainer
+var _body_bottom: VBoxContainer
+var _toggle_btn: Button
+var _saved_split_offset: int = -220
+var _bottom_collapsed: bool = false
+
+
+func shutdown_translations() -> void:
+	# Called by the plugin on editor exit / plugin disable. Sends stop to every
+	# running Translate node and blocks until its Python child has flushed the
+	# _progress partial, so closing the editor mid-run doesn't lose work.
+	for child in _graph.get_children():
+		if child.has_method("is_running") and child.is_running():
+			if child.has_method("stop_translation"):
+				child.stop_translation()
+	for child in _graph.get_children():
+		if child.has_method("wait_for_finish"):
+			child.wait_for_finish()
+
+
+func _report_orphan_partials() -> void:
+	# Translate writes intermediates to user://localization_ai/out/. After a
+	# normal Run + Export they are cleaned up. Anything left over means a
+	# previous session was killed (editor crash, force-quit) — surface those
+	# paths so the user can recover them by hand.
+	var tmp_dir := OS.get_user_data_dir().path_join("localization_ai/out")
+	# Also peek at the pre-refactor location in case the user is upgrading
+	# from an older plugin version.
+	var legacy := OS.get_user_data_dir().path_join("localization_ai_out")
+	if not DirAccess.dir_exists_absolute(tmp_dir) and DirAccess.dir_exists_absolute(legacy):
+		tmp_dir = legacy
+	if not DirAccess.dir_exists_absolute(tmp_dir):
+		return
+	var d := DirAccess.open(tmp_dir)
+	if d == null:
+		return
+	var found: Array[String] = []
+	d.list_dir_begin()
+	while true:
+		var name := d.get_next()
+		if name.is_empty():
+			break
+		if d.current_is_dir():
+			continue
+		if name.ends_with("_progress.csv") or name.ends_with("_progress.po") \
+				or name.ends_with("_translated.csv") or name.ends_with("_translated.po"):
+			found.append(tmp_dir.path_join(name))
+	d.list_dir_end()
+	if found.is_empty():
+		return
+	_log_line("[color=yellow]⚠ Recovered %d unfinished translation(s) from a previous session:[/color]" % found.size())
+	for p in found:
+		_log_line("[color=yellow]    %s[/color]" % p)
+	_log_line("[color=gray]    (Drag them into a File Source to resume, or delete them.)[/color]")
+
+
+func _toggle_bottom_panel() -> void:
+	_bottom_collapsed = not _bottom_collapsed
+	if _bottom_collapsed:
+		_saved_split_offset = _body_split.split_offset
+		_output_tabs.visible = false
+		_body_bottom.custom_minimum_size = Vector2(0, 0)
+		# Slam the split all the way down so only the header strip shows.
+		_body_split.split_offset = -_output_tabs.get_combined_minimum_size().y - 4
+		await get_tree().process_frame
+		_body_split.split_offset = -28
+		_toggle_btn.text = "▴"
+		_toggle_btn.tooltip_text = "Show log panel"
+	else:
+		_output_tabs.visible = true
+		_body_bottom.custom_minimum_size = Vector2(0, 120)
+		_body_split.split_offset = _saved_split_offset if _saved_split_offset < -100 else -220
+		_toggle_btn.text = "▾"
+		_toggle_btn.tooltip_text = "Hide log panel"
 
 
 # ── Right-click handler ───────────────────────────────────────────────────────
@@ -170,6 +345,9 @@ func _on_graph_gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton \
 			and event.button_index == MOUSE_BUTTON_RIGHT \
 			and event.pressed:
+		if _graph_locked:
+			_log_line("[color=gray]› Graph is locked while a translation is running. Pause or Stop first.[/color]")
+			return
 		_spawn_pos = event.position / _graph.zoom + _graph.scroll_offset
 		var screen_pos := Vector2i(_graph.get_screen_position() + event.position)
 		_context_menu.popup(Rect2i(screen_pos, Vector2i.ZERO))
@@ -217,7 +395,6 @@ func _connect_node_signals(node: Object) -> void:
 	if node.has_signal("translation_done"):
 		node.translation_done.connect(func(p: String) -> void:
 			_propagate_to_exports(node.name, p)
-			_show_preview(p)
 			_update_toolbar_buttons()
 		)
 	if node.has_signal("progress_updated"):
@@ -225,10 +402,12 @@ func _connect_node_signals(node: Object) -> void:
 	if node.has_signal("translation_paused"):
 		node.translation_paused.connect(func() -> void:
 			_pause_btn.text = "▶  Resume"
+			_refresh_status_border()
 		)
 	if node.has_signal("translation_resumed"):
 		node.translation_resumed.connect(func() -> void:
 			_pause_btn.text = "⏸  Pause"
+			_refresh_status_border()
 		)
 	if node.has_signal("translation_stopped"):
 		node.translation_stopped.connect(func() -> void:
@@ -245,6 +424,8 @@ func _next_pos() -> Vector2:
 
 func _on_connection_request(from_node: StringName, from_port: int,
 		to_node: StringName, to_port: int) -> void:
+	if _graph_locked:
+		return
 	_graph.connect_node(from_node, from_port, to_node, to_port)
 
 	var src := _graph.get_node_or_null(NodePath(from_node))
@@ -264,10 +445,15 @@ func _on_connection_request(from_node: StringName, from_port: int,
 
 func _on_disconnection_request(from_node: StringName, from_port: int,
 		to_node: StringName, to_port: int) -> void:
+	if _graph_locked:
+		return
 	_graph.disconnect_node(from_node, from_port, to_node, to_port)
 
 
 func _on_delete_nodes_request(nodes: Array[StringName]) -> void:
+	if _graph_locked:
+		_log_line("[color=gray]› Cannot delete nodes while a translation is running.[/color]")
+		return
 	for node_name in nodes:
 		for conn in _graph.get_connection_list():
 			if conn.from_node == node_name or conn.to_node == node_name:
@@ -277,6 +463,84 @@ func _on_delete_nodes_request(nodes: Array[StringName]) -> void:
 		if node:
 			node.queue_free()
 	_log_line("[color=gray]› Deleted %d node(s)[/color]" % nodes.size())
+
+
+# ── Graph lock (no edits while a translation is running) ─────────────────────
+
+# We disable interactive widgets inside each GraphNode rather than overlay a
+# transparent shield, because (a) the toolbar's Pause/Stop must stay clickable
+# (b) users still want to scroll / zoom the graph to watch progress. Original
+# state is remembered per-control via metadata so we can restore on unlock.
+
+const _LOCK_PROPS := {
+	"OptionButton": "disabled",
+	"Button": "disabled",
+	"MenuButton": "disabled",
+	"CheckBox": "disabled",
+	"CheckButton": "disabled",
+	"SpinBox": "editable",
+	"LineEdit": "editable",
+	"TextEdit": "editable",
+}
+
+
+func _set_graph_locked(locked: bool) -> void:
+	if locked == _graph_locked:
+		return
+	_graph_locked = locked
+	for child in _graph.get_children():
+		if not (child is GraphNode):
+			continue
+		var gn: GraphNode = child
+		# Keep nodes selectable so the user can still inspect / pan to them,
+		# but freeze their position and disable inner controls.
+		if locked:
+			if not gn.has_meta("_lock_draggable"):
+				gn.set_meta("_lock_draggable", gn.draggable)
+			gn.draggable = false
+		else:
+			if gn.has_meta("_lock_draggable"):
+				gn.draggable = bool(gn.get_meta("_lock_draggable"))
+				gn.remove_meta("_lock_draggable")
+		_set_controls_locked(gn, locked)
+
+
+func _set_controls_locked(root: Node, locked: bool) -> void:
+	for c in root.get_children():
+		if c is Control:
+			_lock_single_control(c, locked)
+		if c.get_child_count() > 0:
+			_set_controls_locked(c, locked)
+
+
+func _lock_single_control(c: Control, locked: bool) -> void:
+	# Per-node flow controls (Pause / Stop on translate_node) opt out via meta
+	# so users can still pause/stop a running file from the node itself.
+	if c.has_meta("lock_exempt") and bool(c.get_meta("lock_exempt")):
+		return
+	var cls := c.get_class()
+	var prop: String = _LOCK_PROPS.get(cls, "")
+	# Some Godot classes don't show up exactly in the map (e.g. EditorSpinSlider
+	# subclasses); fall back to inherits-from checks.
+	if prop.is_empty():
+		if c is Button:
+			prop = "disabled"
+		elif c is LineEdit:
+			prop = "editable"
+		elif c is SpinBox:
+			prop = "editable"
+	if prop.is_empty():
+		return
+	var meta_key := "_lock_" + prop
+	if locked:
+		if not c.has_meta(meta_key):
+			c.set_meta(meta_key, c.get(prop))
+		# disabled → set to true; editable → set to false
+		c.set(prop, true if prop == "disabled" else false)
+	else:
+		if c.has_meta(meta_key):
+			c.set(prop, c.get_meta(meta_key))
+			c.remove_meta(meta_key)
 
 
 func _propagate_to_exports(translate_name: String, output_path: String) -> void:
@@ -292,8 +556,6 @@ func _propagate_to_exports(translate_name: String, output_path: String) -> void:
 
 func _run_pipeline() -> void:
 	_log.clear()
-	_preview.text = ""
-	_preview_label.text = "  Live translation will appear here…"
 	_log_line("[color=cyan]▶  Run started[/color]")
 	_run_btn.disabled = true
 	_pause_btn.disabled = false
@@ -308,6 +570,25 @@ func _run_pipeline() -> void:
 		_stop_btn.disabled = true
 		return
 
+	# Pre-flight: validate every Export node's destination before we kick off
+	# any translation work, so the user finds out about a missing folder up front.
+	var seen_exports := {}
+	for chain in chains:
+		for i in range(3, chain.size()):
+			var ex = chain[i]
+			if seen_exports.has(ex):
+				continue
+			seen_exports[ex] = true
+			if not ex.has_method("validate_destination"):
+				continue
+			var dest_err: String = ex.validate_destination()
+			if not dest_err.is_empty():
+				_log_line("[color=red]✗ %s[/color]" % dest_err)
+				_run_btn.disabled = false
+				_pause_btn.disabled = true
+				_stop_btn.disabled = true
+				return
+
 	var limit := int(_parallel_spin.value)
 	_log_line("Found %d chain(s)  (parallel limit: %d)" % [chains.size(), limit])
 	_chains_queue = chains.duplicate()
@@ -319,6 +600,7 @@ func _run_pipeline() -> void:
 	_eta_lbl.text = "  ETA: warming up…"
 	_eta_timer.start()
 	_pump_chains()
+	_update_toolbar_buttons()
 
 
 func _pump_chains() -> void:
@@ -363,6 +645,11 @@ func _start_chain(chain: Array) -> void:
 
 	_log_line("Chain  →  [b]%s[/b]" % file.get_file())
 	tr.set_input_file(file)
+	# Tell each downstream export which file this chain originated from so it
+	# can fall back to that folder if the user-chosen destination vanishes.
+	for ex in exports:
+		if ex.has_method("set_source_file"):
+			ex.set_source_file(file)
 
 	var err: String = tr.run()
 	if not err.is_empty():
@@ -423,7 +710,7 @@ func _build_chains() -> Array:
 	return chains
 
 
-# ── Progress + Preview ────────────────────────────────────────────────────────
+# ── Progress ─────────────────────────────────────────────────────────────────
 
 func _on_progress(current: int, total: int, source: String, translated: String, node_name: String = "") -> void:
 	# Record per-node progress for the ETA aggregator.
@@ -438,12 +725,10 @@ func _on_progress(current: int, total: int, source: String, translated: String, 
 	var pct: String = (" %d%%" % int(100.0 * current / total)) if total > 0 else ""
 
 	if not translated.is_empty():
-		# Translation completed — log both source and translated, update preview
+		# Translation completed — log both source and translated lines.
 		_log_line("  · %d/%d%s" % [current, total, pct])
 		_log_line("[color=#aab4cc]    📝 %s[/color]" % source)
 		_log_line("[color=#5af094]    ✅ %s[/color]" % translated)
-		_preview.text += "%s  →  %s\n" % [source, translated]
-		_preview_label.text = "  Live translation (%d/%d)" % [current, total]
 
 
 # ── ETA ──────────────────────────────────────────────────────────────────────
@@ -668,27 +953,6 @@ func _clear_graph() -> void:
 			child.queue_free()
 	_current_workflow_path = ""
 	_update_workflow_label()
-
-
-# ── Preview ───────────────────────────────────────────────────────────────────
-
-func _show_preview(path: String) -> void:
-	var abs := ProjectSettings.globalize_path(path)
-	var file := FileAccess.open(abs, FileAccess.READ)
-	if file == null:
-		_preview.text = "(cannot open file: %s)" % abs
-		return
-	var content := file.get_as_text()
-	file.close()
-
-	_preview.text = content
-	_preview_label.text = "  %s  (%d lines, %d bytes)" % [
-		path.get_file(),
-		content.count("\n"),
-		content.length(),
-	]
-	# Switch to Preview tab
-	_output_tabs.current_tab = 1
 
 
 # ── Log ───────────────────────────────────────────────────────────────────────

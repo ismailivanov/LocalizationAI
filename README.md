@@ -1,53 +1,42 @@
 # LocalizationAI
 
-A Godot 4.7 editor plugin that translates `.csv` and `.po` localization files using a **local LLM (Ollama)** or **OpenRouter**. Drag your source file into a node-based graph, pick target languages, and let the model do the rest — with live progress, pause/resume, and partial-output recovery.
+A Godot 4.7 editor plugin that translates `.csv` and `.po` localization files with an LLM — either a local **Ollama** server (free, offline) or **OpenRouter** (paid, hosted). You drop your file into a node graph, pick the languages, hit Run, and watch the strings fill in.
 
 ![Godot 4.7+](https://img.shields.io/badge/Godot-4.7%2B-478CBF?logo=godot-engine&logoColor=white)
 ![Python 3](https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+
 <img width="2560" height="1367" alt="image" src="https://github.com/user-attachments/assets/42500718-282d-46df-af59-443f21b099fa" />
 
-## Features
+## What it does
 
-- **Two backends** — point it at a local **Ollama** server for offline / free translation, or at **OpenRouter** for hosted models (GPT, Claude, Gemini, Llama, etc.) via your own API key.
-- **CSV and PO** — auto-detects Godot CSV translation tables and gettext `.po` catalogs. Existing translations are preserved; only empty cells / `msgstr` are filled.
-- **Node-based workflow** — a `GraphEdit` canvas with five node kinds:
-  - **File Source** — single `.csv` / `.po` file.
-  - **Directory Source** — recursive scan; queues every matching file through the same translate node.
-  - **Translate** — provider, model, source language, and one or more target languages.
-  - **Prompt** — custom instructions injected into the system prompt, either globally or per target language (e.g. tone, terminology, formality).
-  - **Export** — writes the result into a chosen project folder, deriving the output name from the input.
-- **Multiple target languages in one pass** — pick any combination from 75+ ISO codes; each language is requested as a separate model call so failures don't poison the rest.
-- **Live progress and ETA** — per-node progress bars plus an aggregate ETA across every chain running in parallel.
-- **Pause, resume, stop** — pause mid-run, resume later. Stopping (or running out of memory) flushes a `*_progress.csv` / `*_progress.po` partial file, which can be fed back through the graph to continue exactly where it stopped.
-- **Memory guard** — `--min-free-mb` (default 800 MB) aborts cleanly before a large local model swaps the desktop. Checked before model load and between every string.
-- **Parallel chains** — adjustable concurrency: translate multiple files at once, or queue many files through one translate node sequentially.
-- **Workflow save / load** — the whole graph (nodes, connections, settings) serializes to JSON under `addons/localization_ai/workflows/`.
-- **Game-localization-tuned prompts** — built-in system prompt preserves `%s`, `{name}`, BBCode tags, line breaks, and capitalization style. A post-processing pass strips common LLM artifacts (`"Translation:"` prefixes, surrounding quotes, echoed source).
-- **Model manager** — list, pull, and delete Ollama models from inside the editor.
-- **No Python dependencies** — `translate.py` is stdlib-only. Just `python3` on `PATH`.
+You build a small graph — `Source → Translate → Export` — and the plugin handles the rest. CSV translation tables and gettext `.po` catalogs both work; existing translations stay put, only empty cells get filled. Pick 75+ target languages in one pass. Add a **Prompt** node to inject custom instructions (tone, terminology, formality) globally or per language. Point a **Directory Source** at a folder to batch a whole project's worth of files through the same translate node.
 
-## Installation
+Speed comes from two knobs that stack: **parallel chains** (different files at once, top toolbar) and **parallel requests** (concurrent strings within one file, on the translate node). OpenRouter handles 8+ in flight comfortably; small local models usually want 1–2.
+
+Long runs are safe to interrupt. Pause lets in-flight requests finish, then waits. Stop flushes a `*_progress.csv` / `*_progress.po` partial file you can feed back through the graph to resume exactly where you left off — already-filled cells are skipped. The same partial gets written if Godot crashes, the OS reboots, or memory runs out. Speaking of which: a built-in memory guard aborts cleanly when free RAM drops below 800 MB so a too-big local model can't swap your desktop into a freeze.
+
+Translations are tuned for game text. The system prompt preserves `%s`, `{name}`, BBCode tags, line breaks, and capitalization style. A post-processing pass strips the usual LLM noise (`Translation:` prefixes, echoed source, surrounding quotes the source didn't have). Save the whole graph — nodes, connections, models, languages, parallel counts — to a JSON workflow under `addons/localization_ai/workflows/` and load it next session.
+
+No Python packages to install. The translator is stdlib-only; you just need `python3` on `PATH`. Ollama models can be listed / pulled / deleted from the editor's **Models** tab. OpenRouter keys are kept in a local keyring under Godot's `user://` folder (`%APPDATA%\Godot\app_userdata\<project>\` on Windows, `~/Library/Application Support/Godot/app_userdata/<project>/` on macOS, `~/.local/share/godot/app_userdata/<project>/` on Linux) so workflow JSONs stay safe to share.
+
+## Install
 
 1. Copy `addons/localization_ai/` into your project's `addons/` folder.
-2. Enable **LocalizationAI** in **Project → Project Settings → Plugins**.
-3. Make sure `python3` is available on your `PATH`.
-4. For local mode, install [Ollama](https://ollama.com/) and pull a model (e.g. `ollama pull llama3.1:8b`). For OpenRouter, grab a key at [openrouter.ai](https://openrouter.ai/).
-5. Open the **LocalizationAI** main-screen tab in the editor.
+2. **Project → Project Settings → Plugins** → enable **LocalizationAI**.
+3. Make sure `python3` is on your `PATH`.
+4. For local mode: install [Ollama](https://ollama.com/) and `ollama pull llama3.1:8b` (or whatever fits your RAM). For hosted: get a key at [openrouter.ai](https://openrouter.ai/).
+5. Open the **LocalizationAI** main-screen tab.
 
 ## Quick start
 
 1. Right-click the canvas → **Add File Source** → pick a `.csv` or `.po`.
-2. Right-click → **Add Translate** → choose provider, model, and target languages.
-3. Right-click → **Add Export** → pick an output folder.
-4. Connect: `File Source → Translate → Export`.
-5. Press **Run**.
+2. **Add Translate** → choose provider, model, source + target languages.
+3. **Add Export** → pick an output folder.
+4. Connect `File Source → Translate → Export` (left-to-right green ports).
+5. **▶ Run**.
 
-An example file is included at `addons/localization_ai/example/game_ui.csv`, and a starter graph at `addons/localization_ai/workflows/basic_workflow.json`.
-
-## Architecture (short version)
-
-The editor side is `@tool` GDScript driving a `GraphEdit`. Real translation is done by `addons/localization_ai/scripts/translate.py`, launched as a background process. The two sides talk through three temp files per run (progress / control / prompts), so pause / stop / live progress all work without blocking the editor. See [CLAUDE.md](CLAUDE.md) for a deeper walkthrough.
+A starter graph lives at `addons/localization_ai/workflows/basic_workflow.json`. The [Getting Started](docs/Getting-Started.md) page walks through each setting in more detail.
 
 ## Standalone CLI
 
@@ -59,26 +48,30 @@ python3 addons/localization_ai/scripts/translate.py \
     --stopped-output strings_progress.csv \
     --provider local --model llama3.1:8b \
     --target-lang bg,da,tr --source-lang en \
-    --api-url http://localhost:11434
+    --api-url http://localhost:11434 \
+    --workers 4
 ```
 
 Model management:
 
 ```sh
 python3 addons/localization_ai/scripts/manage_models.py \
-    --action list \
-    --api-url http://localhost:11434
+    --action list --api-url http://localhost:11434
 ```
+
+## Architecture (one paragraph)
+
+The editor side is `@tool` GDScript driving a `GraphEdit`. Real work happens in `addons/localization_ai/scripts/translate.py`, launched as a background process. The two sides talk through three temp files per run (progress / control / prompts), so pause / stop / live progress work without ever blocking the editor. [CLAUDE.md](CLAUDE.md) has the deep dive.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
 
-## Disclaimer — use at your own risk
+## Use at your own risk
 
-I built this for myself. It works for my use case, but it was developed with heavy AI assistance and has **no test suite, no CI, and no formal review**. Before you point it at a real project:
+I built this for my own projects. It works for me, but it was developed with heavy AI assistance and there's **no test suite, no CI, no formal review**. Before you point it at anything important:
 
-- Back up your `.csv` / `.po` files. The plugin overwrites translation cells; a bad model output is still a write.
-- Spot-check the output. LLMs occasionally drop placeholders (`%s`, `{name}`), invent line breaks, or "translate" things that shouldn't be translated (proper nouns, format tokens).
-- Watch your memory if you run local models — the guard helps but isn't a guarantee.
-- Treat OpenRouter / Ollama costs and rate limits as your responsibility.
+- **Back up your `.csv` / `.po` files.** Bad model output is still a write.
+- **Spot-check the output.** LLMs occasionally drop placeholders (`%s`, `{name}`), invent line breaks, or "translate" proper nouns that shouldn't be touched.
+- **Watch memory on local models.** The guard helps but isn't a guarantee.
+- **Your OpenRouter / Ollama costs and rate limits are yours.** OpenRouter keys are stored in a local keyring under Godot's `user://` directory (outside the project repo), so workflow JSONs are safe to commit. The keyring file itself is plaintext — anyone with shell access to your account can read it.

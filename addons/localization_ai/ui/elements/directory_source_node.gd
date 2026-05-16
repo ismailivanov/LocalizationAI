@@ -107,8 +107,14 @@ func _files_from_start() -> Array[String]:
 
 
 func _on_start_from_selected(i: int) -> void:
-	if i >= 0 and i < _files.size():
-		_start_from_path = _files[i]
+	# Index 0 is the "(all files)" sentinel — empty path means no skip.
+	if i == 0:
+		_start_from_path = ""
+		_propagate_first_file()
+		return
+	var files_idx := i - 1
+	if files_idx >= 0 and files_idx < _files.size():
+		_start_from_path = _files[files_idx]
 		_propagate_first_file()
 
 
@@ -159,13 +165,22 @@ func _rebuild_start_from() -> void:
 		_start_from.disabled = true
 		return
 	_start_from.disabled = false
+	# Index 0 is a sentinel meaning "translate everything, no skip". Resume
+	# semantics (skip earlier files) only kicks in when the user explicitly
+	# picks a specific file from the list.
+	_start_from.add_item("(all files)")
+	_start_from.set_item_tooltip(0,
+		"Translate every file the source matches. Pick a specific file below to resume from that point and skip earlier ones.")
 	var select_idx := 0
 	for i in _files.size():
 		_start_from.add_item(_files[i].get_file())
 		if _files[i] == _start_from_path:
-			select_idx = i
+			select_idx = i + 1  # +1 because of the "(all)" sentinel at index 0
 	_start_from.select(select_idx)
-	_start_from_path = _files[select_idx]
+	if select_idx == 0:
+		_start_from_path = ""
+	else:
+		_start_from_path = _files[select_idx - 1]
 
 
 func _propagate_first_file() -> void:

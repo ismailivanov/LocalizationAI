@@ -223,10 +223,11 @@ func _download_model() -> void:
 	_status_label.text = "Starting download of %s…" % model
 	_current_download = model
 
-	# Progress file (Godot polls; Python writes atomically)
-	var user_dir := ProjectSettings.globalize_path("user://")
-	DirAccess.make_dir_recursive_absolute(user_dir)
-	_progress_file = user_dir.path_join("localization_ai_pull_%d.json" % Time.get_ticks_msec())
+	# Progress file (Godot polls; Python writes atomically). Lives under the
+	# plugin's shared user-data subdir to keep Godot's user:// folder tidy.
+	var runs_dir := ProjectSettings.globalize_path("user://localization_ai/runs")
+	DirAccess.make_dir_recursive_absolute(runs_dir)
+	_progress_file = runs_dir.path_join("pull_%d.json" % Time.get_ticks_msec())
 	# Make sure stale file doesn't trip polling
 	if FileAccess.file_exists(_progress_file):
 		DirAccess.remove_absolute(_progress_file)

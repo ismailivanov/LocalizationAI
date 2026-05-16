@@ -31,5 +31,11 @@ func _enter_tree() -> void:
 
 func _exit_tree() -> void:
 	if _main_panel:
+		# Give the main panel a chance to flush any in-flight translation
+		# (write the _progress partial, join the Python child) before we tear
+		# the tree down. queue_free() alone runs _exit_tree on children too
+		# late to reliably block on Thread.wait_to_finish().
+		if _main_panel.has_method("shutdown_translations"):
+			_main_panel.shutdown_translations()
 		_main_panel.queue_free()
 		_main_panel = null

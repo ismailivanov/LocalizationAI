@@ -103,16 +103,19 @@ var _model_field: LineEdit
 var _src_lang: OptionButton    # [3]
 var _lang_btn: MenuButton      # [4]
 var _selected_langs: Array[String] = []
-var _status: Label             # [5]
-var _btn_container: HBoxContainer  # [6]
+var _workers_row: HBoxContainer  # [5]
+var _workers_spin: SpinBox
+var _status: Label             # [6]
+var _btn_container: HBoxContainer  # [7]
 var _pause_btn: Button
 var _stop_btn: Button
-var _source_header: Label      # [7]
-var _source_label: Label       # [8]
-var _translated_header: Label  # [9]
-var _translated_label: Label   # [10]  → OUTPUT port
+var _source_header: Label      # [8]
+var _source_label: Label       # [9]
+var _translated_header: Label  # [10]
+var _translated_label: Label   # [11]
 
 var _thread: Thread
+var _src_lang_ready: bool = false
 var _input_file: String = ""
 var _output_file: String = ""
 var _progress_file: String = ""
@@ -123,6 +126,11 @@ var _last_progress_text: String = ""
 var _last_progress_current: int = -1
 var _is_running: bool = false
 var _is_paused: bool = false
+
+# Path Python is writing the live partial to. Surfaced to downstream Export
+# nodes via the snapshot timer so recovery files land in the export folder.
+var _partial_path: String = ""
+var _snapshot_timer: Timer
 
 # Memory safety threshold (MB). If free RAM drops below this during
 # translation, the backend aborts cleanly to keep the OS responsive.
@@ -149,6 +157,7 @@ func _ready() -> void:
 
 	_api_field = LineEdit.new()
 	_api_field.placeholder_text = "API URL (http://localhost:11434)"
+	_api_field.focus_exited.connect(_on_api_field_focus_exited)
 	add_child(_api_field)
 
 	# Model picker: dropdown of installed local models + refresh + custom name field.
@@ -196,6 +205,22 @@ func _ready() -> void:
 	popup.hide_on_checkable_item_selection = false
 	add_child(_lang_btn)
 
+	# ── Concurrency picker (parallel HTTP requests within one file) ─────
+	_workers_row = HBoxContainer.new()
+	_workers_row.custom_minimum_size = Vector2(320, 0)
+	var workers_lbl := Label.new()
+	workers_lbl.text = "⚡ Parallel requests:"
+	workers_lbl.tooltip_text = "Number of translation requests in flight at once for this file.\n1 = sequential (safest, default for tiny local models).\n4–8 = great for OpenRouter / fast local models."
+	_workers_row.add_child(workers_lbl)
+	_workers_spin = SpinBox.new()
+	_workers_spin.min_value = 1
+	_workers_spin.max_value = 32
+	_workers_spin.value = 4
+	_workers_spin.step = 1
+	_workers_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_workers_row.add_child(_workers_spin)
+	add_child(_workers_row)
+
 	_status = Label.new()
 	_status.text = "Connect a File Source"
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -211,6 +236,8 @@ func _ready() -> void:
 	_pause_btn.disabled = true
 	_pause_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_pause_btn.pressed.connect(_on_pause_pressed)
+	# Flow-control buttons stay clickable while the graph is locked.
+	_pause_btn.set_meta("lock_exempt", true)
 	_btn_container.add_child(_pause_btn)
 
 	_stop_btn = Button.new()
@@ -218,6 +245,7 @@ func _ready() -> void:
 	_stop_btn.disabled = true
 	_stop_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_stop_btn.pressed.connect(_on_stop_pressed)
+	_stop_btn.set_meta("lock_exempt", true)
 	_btn_container.add_child(_stop_btn)
 
 	add_child(_btn_container)
@@ -254,13 +282,21 @@ func _ready() -> void:
 	set_slot(0, true,  PORT_TYPE, PORT_COLOR, false, PORT_TYPE, Color.WHITE)
 	# Slot 1 = Prompt Hint Label (Left: Prompt Input, Right: nothing)
 	set_slot(1, true, PORT_TYPE_PROMPT, PORT_COLOR_PROMPT, false, PORT_TYPE, Color.WHITE)
-	# Slot 11 = Translated Label (Left: nothing, Right: File Output)
-	set_slot(11, false, PORT_TYPE, Color.WHITE, true,  PORT_TYPE, PORT_COLOR)
+	# Slot 12 = Translated Label (Left: nothing, Right: File Output)
+	set_slot(12, false, PORT_TYPE, Color.WHITE, true,  PORT_TYPE, PORT_COLOR)
 
 	_progress_timer = Timer.new()
 	_progress_timer.wait_time = 0.5
 	_progress_timer.timeout.connect(_read_progress)
 	add_child(_progress_timer)
+
+	# Snapshot the live partial out to downstream Export nodes every minute, so
+	# recovery files land in the user's chosen export folder (with rotating
+	# backups) rather than only in user://.
+	_snapshot_timer = Timer.new()
+	_snapshot_timer.wait_time = 60.0
+	_snapshot_timer.timeout.connect(_snapshot_to_exports)
+	add_child(_snapshot_timer)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -318,6 +354,41 @@ func stop_translation() -> void:
 	log_message.emit("Translate: ⏹ stopping…")
 
 
+func _exit_tree() -> void:
+	wait_for_finish()
+
+
+func wait_for_finish() -> void:
+	# Send stop and give the Python child a bounded window to flush its
+	# _progress partial before we let the editor close. We can't block
+	# indefinitely — a slow local model could be 30+ s into an HTTP call when
+	# the user hits the X, and the editor would appear frozen / look crashed.
+	#
+	# Safety net if we run past the deadline:
+	#   • Python writes the partial after every string (atomic rename), so
+	#     the last completed cell is already on disk.
+	#   • Python self-terminates when its parent PID changes (Godot exits),
+	#     so the orphan flushes one more partial and exits on its own.
+	if _thread == null or not _thread.is_started():
+		return
+	if _is_running:
+		_write_control("stop")
+
+	const SHUTDOWN_BUDGET_MS := 2500
+	var deadline := Time.get_ticks_msec() + SHUTDOWN_BUDGET_MS
+	while _thread.is_alive() and Time.get_ticks_msec() < deadline:
+		OS.delay_msec(50)
+
+	if not _thread.is_alive():
+		_thread.wait_to_finish()
+		# We joined cleanly — push one last snapshot to the export folder.
+		_snapshot_to_exports()
+	# else: thread is mid-HTTP. We deliberately do NOT call wait_to_finish
+	# here (it would block indefinitely and freeze editor close). Godot will
+	# print a "thread was not joined" warning; the OS reclaims it. Partial
+	# safety is covered by Python's incremental writes + ppid death check.
+
+
 func _on_pause_pressed() -> void:
 	if _is_paused:
 		resume_translation()
@@ -351,21 +422,44 @@ func _set_buttons_running(running: bool) -> void:
 
 func save_state() -> Dictionary:
 	var src_lang := ""
-	if _src_lang and not _src_lang.disabled and _src_lang.item_count > 0:
+	if _src_lang and _src_lang_ready and _src_lang.item_count > 0:
 		src_lang = _src_lang.get_item_text(_src_lang.selected)
+
+	# OpenRouter keys never land in the workflow JSON — workflows are meant to
+	# be shareable / committable, so the key lives in a user:// keyring
+	# instead. For Local AI, the field holds an API URL (not a secret) and is
+	# kept inline for portability.
+	var api_value: String = ""
+	if _provider.selected == 1:
+		_keyring_save("openrouter", _api_field.text.strip_edges())
+	else:
+		api_value = _api_field.text
+
 	return {
 		"provider":    _provider.selected,
-		"api":         _api_field.text,
+		"api":         api_value,
 		"model":       _model_field.text,
 		"source_lang": src_lang,
 		"target_langs": ",".join(PackedStringArray(_selected_langs)),
+		"workers":     int(_workers_spin.value) if _workers_spin != null else 4,
 	}
 
 
 func load_state(data: Dictionary) -> void:
 	_provider.select(int(data.get("provider", 0)))
 	_on_provider_changed(_provider.selected)
-	_api_field.text   = str(data.get("api", ""))
+	var saved_api := str(data.get("api", ""))
+	if _provider.selected == 1:
+		# OpenRouter: prefer the keyring. If an older workflow still has the
+		# key inline, migrate it into the keyring and clear the field's source
+		# so future saves don't keep round-tripping the secret.
+		if not saved_api.is_empty():
+			_keyring_save("openrouter", saved_api)
+			_api_field.text = saved_api
+		else:
+			_api_field.text = _keyring_load("openrouter")
+	else:
+		_api_field.text = saved_api
 	_model_field.text = str(data.get("model", ""))
 	# Restore target languages (support both old "target_lang" and new "target_langs")
 	var tl := str(data.get("target_langs", data.get("target_lang", "")))
@@ -374,6 +468,8 @@ func load_state(data: Dictionary) -> void:
 			_select_lang_by_code(code.strip_edges())
 	# Source lang only applies once a file is connected; remember for later
 	set_meta("pending_source_lang", str(data.get("source_lang", "")))
+	if _workers_spin != null and data.has("workers"):
+		_workers_spin.value = clamp(int(data.get("workers", 4)), 1, 32)
 
 
 func _apply_pending_source_lang() -> void:
@@ -399,8 +495,7 @@ func run() -> String:
 		return "no target language selected"
 	if _provider.selected == 1 and _api_field.text.strip_edges().is_empty():
 		return "OpenRouter API key is empty"
-	if _input_file.get_extension().to_lower() == "csv" \
-			and (_src_lang.disabled or _src_lang.item_count == 0):
+	if _input_file.get_extension().to_lower() == "csv" and not _src_lang_ready:
 		return "CSV has no source language column"
 
 	_status.text = "Translating…"
@@ -408,21 +503,20 @@ func run() -> String:
 	_translated_label.text = ""
 	log_message.emit("Translate: starting  →  " + _input_file.get_file())
 
-	_progress_file = OS.get_user_data_dir().path_join(
-		"localization_ai_progress_%d.json" % Time.get_ticks_msec()
+	var runs_dir := _runs_dir()
+	_progress_file = runs_dir.path_join(
+		"progress_%d.json" % Time.get_ticks_msec()
 	)
-	_control_file = OS.get_user_data_dir().path_join(
-		"localization_ai_control_%d.json" % Time.get_ticks_msec()
+	_control_file = runs_dir.path_join(
+		"control_%d.json" % Time.get_ticks_msec()
 	)
 	_write_control("run")
 
 	_prompt_file = ""
 	var prompts := _collect_prompts()
 	if not prompts.is_empty():
-		var user_dir := ProjectSettings.globalize_path("user://")
-		DirAccess.make_dir_recursive_absolute(user_dir)
-		_prompt_file = user_dir.path_join(
-			"localization_ai_prompts_%d.json" % Time.get_ticks_msec()
+		_prompt_file = runs_dir.path_join(
+			"prompts_%d.json" % Time.get_ticks_msec()
 		)
 		var pf := FileAccess.open(_prompt_file, FileAccess.WRITE)
 		if pf != null:
@@ -439,6 +533,7 @@ func run() -> String:
 	_last_progress_text = ""
 	_set_buttons_running(true)
 	_progress_timer.start()
+	_snapshot_timer.start()
 
 	_thread = Thread.new()
 	_thread.start(_run_translation)
@@ -450,11 +545,14 @@ func run() -> String:
 func _populate_source_langs(path: String) -> void:
 	# Remember the previous selection so iterating a Directory Source over
 	# multiple files with the same columns doesn't reset the picker each time.
+	# Use _src_lang_ready instead of `disabled`, since the graph lock toggles
+	# `disabled` for all controls and would shadow the real readiness state.
 	var prev_sel := ""
-	if _src_lang and not _src_lang.disabled and _src_lang.item_count > 0:
+	if _src_lang and _src_lang_ready and _src_lang.item_count > 0:
 		prev_sel = _src_lang.get_item_text(_src_lang.selected)
 
 	_src_lang.clear()
+	_src_lang_ready = false
 	if path.is_empty():
 		_src_lang.add_item("(connect a file)")
 		_src_lang.disabled = true
@@ -478,6 +576,7 @@ func _populate_source_langs(path: String) -> void:
 		for l in langs:
 			_src_lang.add_item(l)
 		_src_lang.disabled = false
+		_src_lang_ready = true
 		_status.text = "Ready  →  " + path.get_file()
 		if not prev_sel.is_empty():
 			for i in _src_lang.item_count:
@@ -525,6 +624,13 @@ func _on_provider_changed(idx: int) -> void:
 		_api_field.secret = true
 		_model_row.visible = false
 		_model_field.placeholder_text = "Model (e.g. openai/gpt-4o-mini)"
+		# Restore a previously-entered OpenRouter key from the local keyring
+		# (user:// is outside the project repo, so the key never lands in a
+		# committed workflow JSON).
+		if _api_field.text.strip_edges().is_empty():
+			var stored := _keyring_load("openrouter")
+			if not stored.is_empty():
+				_api_field.text = stored
 
 
 func _on_local_model_selected(idx: int) -> void:
@@ -623,18 +729,20 @@ func _run_translation() -> void:
 	var script := ProjectSettings.globalize_path("res://addons/localization_ai/scripts/translate.py")
 	var input_g := ProjectSettings.globalize_path(_input_file)
 	var ext := _input_file.get_extension()
-	# Write the intermediate translated/partial file into user:// so it never
-	# pollutes the source folder (and never triggers Godot's CSV-translation
-	# auto-import, which leaves orphan .import / .translation sidecars behind).
-	# The Export node picks this up via translation_done and copies it to the
-	# user-chosen destination.
-	var tmp_dir := OS.get_user_data_dir().path_join("localization_ai_out")
-	DirAccess.make_dir_recursive_absolute(tmp_dir)
 	var src_stem := _input_file.get_file().get_basename() \
 			.trim_suffix("_progress").trim_suffix("_translated")
-	var base := tmp_dir.path_join("%s_%d" % [src_stem, Time.get_ticks_msec()])
-	var out_g := base + "_translated." + ext
-	var stopped_g := base + "_progress." + ext
+
+	# Prefer writing the live partial directly into the connected Export
+	# node's destination so the recovery file lives where the user expects.
+	# Fall back to user:// only if no export is reachable or its folder is
+	# unusable (e.g. removed).
+	var stopped_g := _resolve_partial_path(input_g, ext)
+	var out_dir := stopped_g.get_base_dir()
+	var out_g := out_dir.path_join("%s_translated.%s" % [src_stem, ext])
+	# Make the partial path reachable from the snapshot timer (which runs on
+	# the main thread; this assignment happens on the worker thread before
+	# Python is spawned, so it's set well before the timer fires).
+	_partial_path = stopped_g
 
 	var args: Array[String] = [
 		script,
@@ -646,7 +754,7 @@ func _run_translation() -> void:
 		"--target-lang", ",".join(PackedStringArray(_selected_langs)),
 	]
 
-	if _input_file.get_extension().to_lower() == "csv" and not _src_lang.disabled:
+	if _input_file.get_extension().to_lower() == "csv" and _src_lang_ready:
 		args.append_array(["--source-lang",
 				_src_lang.get_item_text(_src_lang.selected)])
 
@@ -669,6 +777,12 @@ func _run_translation() -> void:
 	# Low-memory safety: abort if free RAM drops below this threshold (MB).
 	# Prevents the OS from freezing when a too-large local model spills into swap.
 	args.append_array(["--min-free-mb", str(_min_free_mb)])
+
+	# Parallel in-flight requests for this file. Real speedup for OpenRouter
+	# and fast local models; keep at 1 if the model server can't handle
+	# concurrent requests (e.g. a tiny CPU-only Ollama setup).
+	var workers := int(_workers_spin.value) if _workers_spin != null else 1
+	args.append_array(["--workers", str(max(1, workers))])
 
 	var raw: Array = []
 	var exit_code := OS.execute(_python(), args, raw)
@@ -757,6 +871,8 @@ func _on_done(exit_code: int, raw: Array, output_path: String) -> void:
 	_thread.wait_to_finish()
 	_cleanup_progress()
 	_set_buttons_running(false)
+	_snapshot_timer.stop()
+	_partial_path = ""
 	var joined := "\n".join(PackedStringArray(raw))
 
 	for line in joined.split("\n"):
@@ -816,3 +932,118 @@ func _on_done(exit_code: int, raw: Array, output_path: String) -> void:
 
 static func _python() -> String:
 	return "python" if OS.get_name() == "Windows" else "python3"
+
+
+# ── API key storage ──────────────────────────────────────────────────────────
+# OpenRouter keys are stored in a per-user file under Godot's user:// directory
+# (outside the project repo), never inside workflow JSONs. This keeps shared
+# workflows safe to commit. Not encryption — anyone with shell access to your
+# user account can read it — but it solves the accidental-leak-via-PR problem.
+
+# All plugin state in user:// lives under a single subdir to keep Godot's
+# user-data folder tidy:
+#   localization_ai/
+#     keys.cfg          — provider API keys (was localization_ai_keys.cfg in root)
+#     runs/             — transient per-run progress/control/prompts/pull JSONs
+#     out/              — fallback partials when no Export node is connected
+const _BASE_DIR := "user://localization_ai"
+const _KEYRING_FILE := _BASE_DIR + "/keys.cfg"
+const _KEYRING_FILE_LEGACY := "user://localization_ai_keys.cfg"
+const _KEYRING_SECTION := "keys"
+
+
+static func _ensure_dir(path: String) -> String:
+	# Returns a globalized absolute path with the directory guaranteed to exist.
+	var abs := ProjectSettings.globalize_path(path)
+	DirAccess.make_dir_recursive_absolute(abs)
+	return abs
+
+
+static func _runs_dir() -> String:
+	return _ensure_dir(_BASE_DIR + "/runs")
+
+
+static func _out_dir() -> String:
+	return _ensure_dir(_BASE_DIR + "/out")
+
+
+func _migrate_legacy_keyring() -> void:
+	# One-time: move the old root-level keys file under localization_ai/.
+	if not FileAccess.file_exists(_KEYRING_FILE_LEGACY):
+		return
+	if FileAccess.file_exists(_KEYRING_FILE):
+		# New file already exists — drop the stale legacy copy.
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_KEYRING_FILE_LEGACY))
+		return
+	_ensure_dir(_BASE_DIR)
+	if DirAccess.copy_absolute(
+			ProjectSettings.globalize_path(_KEYRING_FILE_LEGACY),
+			ProjectSettings.globalize_path(_KEYRING_FILE)) == OK:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_KEYRING_FILE_LEGACY))
+
+
+func _keyring_save(provider: String, key: String) -> void:
+	_ensure_dir(_BASE_DIR)
+	var cfg := ConfigFile.new()
+	# Best-effort load; an empty/missing file is fine.
+	cfg.load(_KEYRING_FILE)
+	if key.is_empty():
+		cfg.erase_section_key(_KEYRING_SECTION, provider)
+	else:
+		cfg.set_value(_KEYRING_SECTION, provider, key)
+	cfg.save(_KEYRING_FILE)
+
+
+func _keyring_load(provider: String) -> String:
+	_migrate_legacy_keyring()
+	var cfg := ConfigFile.new()
+	if cfg.load(_KEYRING_FILE) != OK:
+		return ""
+	return str(cfg.get_value(_KEYRING_SECTION, provider, ""))
+
+
+func _on_api_field_focus_exited() -> void:
+	# Auto-persist the OpenRouter key the moment the user leaves the field, so
+	# a session can be restarted without re-entering it even if no workflow
+	# is saved.
+	if _provider == null or _provider.selected != 1:
+		return
+	_keyring_save("openrouter", _api_field.text.strip_edges())
+
+
+func _resolve_partial_path(input_g: String, ext: String) -> String:
+	var parent := get_parent()
+	if parent != null and parent.has_method("get_connection_list"):
+		for conn in parent.get_connection_list():
+			if conn.from_node != name:
+				continue
+			var dst := parent.get_node_or_null(NodePath(String(conn.to_node)))
+			if dst == null or not dst.has_method("prepare_partial_path"):
+				continue
+			var p: String = dst.prepare_partial_path(input_g, ext)
+			if not p.is_empty():
+				return p
+	# Fallback: no export connected (or destination missing). Keep the old
+	# user:// temp path so the run can still produce a recoverable file.
+	var tmp_dir := _out_dir()
+	DirAccess.make_dir_recursive_absolute(tmp_dir)
+	var src_stem := input_g.get_file().get_basename() \
+			.trim_suffix("_progress").trim_suffix("_translated")
+	return tmp_dir.path_join("%s_%d_progress.%s" % [src_stem, Time.get_ticks_msec(), ext])
+
+
+func _snapshot_to_exports() -> void:
+	# Periodic recovery push: copy the live partial Python is writing into
+	# every connected Export node's destination (and rotate a couple of
+	# backups). Cheap if nothing has changed since last tick.
+	if _partial_path.is_empty() or not FileAccess.file_exists(_partial_path):
+		return
+	var parent := get_parent()
+	if parent == null or not parent.has_method("get_connection_list"):
+		return
+	for conn in parent.get_connection_list():
+		if conn.from_node != name:
+			continue
+		var dst := parent.get_node_or_null(NodePath(String(conn.to_node)))
+		if dst and dst.has_method("save_snapshot"):
+			dst.save_snapshot(_partial_path)

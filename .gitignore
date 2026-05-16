@@ -15,6 +15,10 @@ mono_crash.*.json
 addons/godot_ai/
 addons/kenyoni/
 
+# Example folder is local-only — contains real translation runs and
+# occasionally API-key-bearing artifacts. Not safe to commit.
+addons/localization_ai/example/
+
 # System / editor files
 .DS_Store
 Thumbs.db

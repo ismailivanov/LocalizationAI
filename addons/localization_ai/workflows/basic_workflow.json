@@ -1,79 +1,81 @@
 {
 	"connections": [
 		{
-			"from": "@GraphNode@21035",
+			"from": "@GraphNode@24354",
 			"from_port": 0,
-			"to": "@GraphNode@21097",
+			"to": "@GraphNode@24345",
 			"to_port": 0
 		},
 		{
-			"from": "@GraphNode@21106",
+			"from": "@GraphNode@24456",
 			"from_port": 0,
-			"to": "@GraphNode@21035",
+			"to": "@GraphNode@24354",
 			"to_port": 1
 		},
 		{
-			"from": "@GraphNode@21137",
+			"from": "@GraphNode@24422",
 			"from_port": 0,
-			"to": "@GraphNode@21035",
+			"to": "@GraphNode@24354",
 			"to_port": 0
 		}
 	],
 	"nodes": [
 		{
 			"kind": "export",
-			"name": "@GraphNode@21097",
+			"name": "@GraphNode@24345",
 			"pos": [
 				1140.0,
 				780.0
 			],
 			"state": {
-				"destination": "/home/carbon/Documents/localization_ai/exports",
+				"destination": "/home/carbon/Documents/GitHub/LocalizationAI/addons/localization_ai/example/exports",
 				"file_name": ""
 			}
 		},
 		{
-			"kind": "prompt",
-			"name": "@GraphNode@21106",
-			"pos": [
-				220.0,
-				660.0
-			],
-			"state": {
-				"prompt": "Don’t forget that this is a medieval-themed game; translate all the dialogue accordingly. Also, don’t translate the words inside the {} brackets—those are commands for the game.",
-				"scope_idx": 0,
-				"size": [
-					308.0,
-					160.0
-				]
-			}
-		},
-		{
-			"kind": "directory_source",
-			"name": "@GraphNode@21137",
-			"pos": [
-				200.0,
-				360.0
-			],
-			"state": {
-				"directory": "/home/carbon/Documents/GitHub/LocalizationAI/addons/localization_ai/example",
-				"filter": 1,
-				"recursive": true
-			}
-		},
-		{
 			"kind": "translate",
-			"name": "@GraphNode@21035",
+			"name": "@GraphNode@24354",
 			"pos": [
 				640.0,
 				380.0
 			],
 			"state": {
 				"api": "",
-				"model": "gpt-oss:20b",
-				"provider": 0,
+				"model": "x-ai/grok-4.3",
+				"provider": 1,
 				"source_lang": "en",
-				"target_langs": "bg,da,tr"
+				"target_langs": "bg,da,tr",
+				"workers": 4
+			}
+		},
+		{
+			"kind": "directory_source",
+			"name": "@GraphNode@24422",
+			"pos": [
+				100.0,
+				380.0
+			],
+			"state": {
+				"directory": "/home/carbon/Documents/GitHub/LocalizationAI/addons/localization_ai/example",
+				"filter": 1,
+				"recursive": false,
+				"start_from": "res://addons/localization_ai/example/dialogues.csv"
+			}
+		},
+		{
+			"kind": "prompt",
+			"name": "@GraphNode@24456",
+			"pos": [
+				120.0,
+				640.0
+			],
+			"state": {
+				"prompt": "Don’t forget that this is a medieval-themed game; translate all the dialogue accordingly. Also, don’t translate the words inside the {} brackets—those are commands for the game.",
+				"scope_idx": 0,
+				"size": [
+					399.999908447266,
+					240.0
+				]
 			}
 		}
 	],

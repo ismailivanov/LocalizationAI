@@ -47,14 +47,27 @@ layout_mode = 2
 
 [node name="ParallelLbl" type="Label" parent="Tabs/Graph/Toolbar" unique_id=2101010101]
 layout_mode = 2
-text = "Parallel:"
+text = "Parallel chains:"
+tooltip_text = "How many independent chains (Source → Translate → Export branches) run at the same time. This does NOT control concurrency within a single file — for that, see the Translate node's '⚡ Parallel requests' setting. The two stack: 2 chains × 4 requests = 8 in-flight calls total.
+
+Useful when:
+• Multiple Translate nodes exist (e.g. different models or providers).
+• Multiple File / Directory Sources feed separate Translate nodes.
+
+Has no effect on a single Directory Source feeding one Translate node — those files queue through the same node sequentially regardless of this value."
 
 [node name="ParallelSpin" type="SpinBox" parent="Tabs/Graph/Toolbar" unique_id=2101010102]
 layout_mode = 2
 min_value = 1.0
 max_value = 8.0
 value = 1.0
-tooltip_text = "Maximum number of chains running simultaneously. Keep at 1 for local Ollama (single model bottleneck); raise it only for cloud providers like OpenRouter."
+tooltip_text = "How many independent chains (Source → Translate → Export branches) run at the same time. This does NOT control concurrency within a single file — for that, see the Translate node's '⚡ Parallel requests' setting. The two stack: 2 chains × 4 requests = 8 in-flight calls total.
+
+Useful when:
+• Multiple Translate nodes exist (e.g. different models or providers).
+• Multiple File / Directory Sources feed separate Translate nodes.
+
+Has no effect on a single Directory Source feeding one Translate node — those files queue through the same node sequentially regardless of this value."
 
 [node name="EtaLbl" type="Label" parent="Tabs/Graph/Toolbar" unique_id=2101010103]
 layout_mode = 2
@@ -103,6 +116,7 @@ custom_minimum_size = Vector2(0, 180)
 layout_mode = 2
 size_flags_horizontal = 3
 current_tab = 0
+tabs_visible = false
 
 [node name="Log" type="ScrollContainer" parent="Tabs/Graph/OutputTabs" unique_id=1721880725]
 layout_mode = 2
@@ -114,27 +128,6 @@ size_flags_horizontal = 3
 size_flags_vertical = 3
 bbcode_enabled = true
 scroll_following = true
-
-[node name="Preview" type="VBoxContainer" parent="Tabs/Graph/OutputTabs" unique_id=865467842]
-visible = false
-layout_mode = 2
-metadata/_tab_index = 1
-
-[node name="PreviewHeader" type="HBoxContainer" parent="Tabs/Graph/OutputTabs/Preview" unique_id=295551668]
-layout_mode = 2
-
-[node name="PreviewLabel" type="Label" parent="Tabs/Graph/OutputTabs/Preview/PreviewHeader" unique_id=1194066351]
-layout_mode = 2
-size_flags_horizontal = 3
-text = "  (Preview will appear here after translation)"
-
-[node name="PreviewEdit" type="TextEdit" parent="Tabs/Graph/OutputTabs/Preview" unique_id=2133757558]
-layout_mode = 2
-size_flags_horizontal = 3
-size_flags_vertical = 3
-editable = false
-wrap_mode = 1
-scroll_smooth = true
 
 [node name="Models" type="MarginContainer" parent="Tabs" unique_id=1385482589]
 visible = false

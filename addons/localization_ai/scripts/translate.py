@@ -10,9 +10,11 @@ import csv
 import json
 import os
 import sys
+import threading
 import time
 import urllib.request
 import urllib.error
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 
 # ── API helpers ─────────────────────────────────────────────────────────────
@@ -163,6 +165,12 @@ _PROGRESS_CURRENT: int = 0
 _LAST_DONE_SOURCE: str = ""
 _LAST_DONE_TRANSLATED: str = ""
 _CONTROL_FILE: str = ""
+# Guards _PROGRESS_*, _LAST_DONE_*, progress-file writes, and partial-file
+# writes when workers > 1.
+_PROGRESS_LOCK = threading.Lock()
+_INITIAL_PPID: int = 0  # PID of the Godot editor that launched us; if this
+                        # changes (Godot crashed/quit) we treat it as a stop so
+                        # the progress file is written and the child exits.
 
 
 class StopTranslation(Exception):
@@ -286,10 +294,48 @@ def _write_progress(source: str, translated: str) -> None:
         pass
 
 
+def _check_parent_alive() -> None:
+    """Raise StopTranslation if the parent process (Godot editor) is gone.
+
+    On POSIX, an orphaned child gets reparented to init (PID 1) — if our
+    parent PID changed from the one we recorded at startup, the editor died
+    and we should flush progress and exit instead of running on as a zombie.
+    On Windows we open the parent handle and check it; if that fails we
+    assume the parent is gone.
+    """
+    if _INITIAL_PPID <= 1:
+        return
+    try:
+        if os.name == "nt":
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            h = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, _INITIAL_PPID
+            )
+            if not h:
+                raise StopTranslation()
+            exit_code = ctypes.c_ulong()
+            ok = ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(exit_code))
+            ctypes.windll.kernel32.CloseHandle(h)
+            if not ok or exit_code.value != STILL_ACTIVE:
+                raise StopTranslation()
+        else:
+            if os.getppid() != _INITIAL_PPID:
+                raise StopTranslation()
+    except StopTranslation:
+        raise
+    except Exception:
+        # Don't let a probe failure abort the run.
+        pass
+
+
 def _check_control() -> None:
     """Check the control file for pause/stop commands between translations.
-    Also enforces the low-memory safety abort."""
+    Also enforces the low-memory safety abort and detects parent death so we
+    flush progress and exit if the editor that spawned us is gone."""
     _check_memory()
+    _check_parent_alive()
     if not _CONTROL_FILE:
         return
     while True:
@@ -307,6 +353,82 @@ def _check_control() -> None:
             continue
         else:  # "run"
             return
+
+
+# ── Parallel runner ─────────────────────────────────────────────────────────
+
+def _run_translations(tasks: list, workers: int, provider: str, api_url: str,
+                      api_key: str, model: str, on_done) -> None:
+    """Translate `tasks` in parallel with bounded concurrency.
+
+    Each task is a dict with at least `source` and `target_lang`. `on_done(task,
+    translated)` is invoked exactly once per completed task, serialized under
+    `_PROGRESS_LOCK`, before the partial file is written.
+
+    Pause/stop are honored between dispatches via `_check_control()`; in-flight
+    requests are allowed to finish (we can't abort an HTTP call mid-flight),
+    after which the appropriate exception is re-raised.
+    """
+    if workers < 1:
+        workers = 1
+
+    if workers == 1:
+        for t in tasks:
+            _check_control()
+            _progress_start(t["source"])
+            tr = translate_text(t["source"], t["target_lang"], provider,
+                                api_url, api_key, model)
+            on_done(t, tr)
+            _progress_done(t["source"], tr)
+        return
+
+    pending = list(tasks)
+    in_flight: dict = {}
+    stop_exc: BaseException = None
+
+    def _submit(pool: ThreadPoolExecutor) -> None:
+        t = pending.pop(0)
+        fut = pool.submit(translate_text, t["source"], t["target_lang"],
+                          provider, api_url, api_key, model)
+        in_flight[fut] = t
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # Prime the pool, honoring pause/stop between submissions.
+        while pending and len(in_flight) < workers and stop_exc is None:
+            try:
+                _check_control()
+            except StopTranslation as exc:
+                stop_exc = exc
+                break
+            _submit(pool)
+
+        while in_flight:
+            done, _pending = wait(list(in_flight.keys()),
+                                  return_when=FIRST_COMPLETED)
+            for fut in done:
+                t = in_flight.pop(fut)
+                try:
+                    tr = fut.result()
+                except Exception as exc:  # noqa: BLE001
+                    # Surface the first error; drain remaining in-flight then
+                    # re-raise so main() can report it.
+                    if stop_exc is None:
+                        stop_exc = exc
+                    continue
+                with _PROGRESS_LOCK:
+                    on_done(t, tr)
+                    _progress_done(t["source"], tr)
+
+            while pending and len(in_flight) < workers and stop_exc is None:
+                try:
+                    _check_control()
+                except StopTranslation as exc:
+                    stop_exc = exc
+                    break
+                _submit(pool)
+
+    if stop_exc is not None:
+        raise stop_exc
 
 
 # ── PO parser / writer ───────────────────────────────────────────────────────
@@ -357,78 +479,103 @@ def _count_po_missing(lines: list) -> int:
 
 def translate_po(input_path: str, output_path: str, stopped_output: str,
                  target_lang: str, provider: str, api_url: str,
-                 api_key: str, model: str) -> int:
+                 api_key: str, model: str, workers: int = 1) -> int:
     with open(input_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
-    _set_total(_count_po_missing(lines))
-
-    out = []
+    # Parse into blocks so we can render the partial file at any point during
+    # parallel translation (completions arrive out of order).
+    blocks: list = []  # ("raw", [str]) | ("entry", dict)
+    pending_raw: list = []
     i = 0
-    count = 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.startswith("msgid "):
+            pending_raw.append(line)
+            i += 1
+            continue
 
-    def _flush_remaining(start: int) -> None:
-        for k in range(start, len(lines)):
-            out.append(lines[k])
+        if pending_raw:
+            blocks.append(("raw", pending_raw))
+            pending_raw = []
 
-    try:
-        while i < len(lines):
-            line = lines[i]
+        msgid_lines = [line]
+        raw_id = line[6:].strip()
+        i += 1
+        while i < len(lines) and lines[i].startswith('"'):
+            raw_id += "\n" + lines[i].strip()
+            msgid_lines.append(lines[i])
+            i += 1
+        msgid = _unescape_po(raw_id.strip('"'))
 
-            if not line.startswith("msgid "):
-                out.append(line)
-                i += 1
-                continue
-
-            # Collect full msgid (may span multiple lines)
-            raw_id = line[6:].strip()
-            out.append(line)
+        msgstr_lines: list = []
+        existing = ""
+        if i < len(lines) and lines[i].startswith("msgstr "):
+            raw_str = lines[i][7:].strip()
+            msgstr_lines.append(lines[i])
             i += 1
             while i < len(lines) and lines[i].startswith('"'):
-                raw_id += "\n" + lines[i].strip()
-                out.append(lines[i])
+                raw_str += "\n" + lines[i].strip()
+                msgstr_lines.append(lines[i])
                 i += 1
-            msgid = _unescape_po(raw_id.strip('"'))
+            existing = _unescape_po(raw_str.strip('"'))
 
-            # Collect existing msgstr
-            if i < len(lines) and lines[i].startswith("msgstr "):
-                raw_str = lines[i][7:].strip()
-                msgstr_start = i
-                i += 1
-                while i < len(lines) and lines[i].startswith('"'):
-                    raw_str += "\n" + lines[i].strip()
-                    i += 1
-                existing = _unescape_po(raw_str.strip('"'))
+        if msgid and not existing:
+            blocks.append(("entry", {
+                "msgid_lines": msgid_lines,
+                "msgid": msgid,
+                "msgstr_lines": msgstr_lines or ['msgstr ""\n'],
+                "translated": False,
+            }))
+        else:
+            blocks.append(("raw", msgid_lines + msgstr_lines))
 
-                if msgid and not existing:
-                    _check_control()
-                    _progress_start(msgid)
-                    translated = translate_text(msgid, target_lang, provider,
-                                                api_url, api_key, model)
-                    out.append(f'msgstr "{_escape_po(translated)}"\n')
-                    count += 1
-                    _progress_done(msgid, translated)
-                else:
-                    # Keep original msgstr lines as-is (resume / header / pre-filled)
-                    for k in range(msgstr_start, i):
-                        out.append(lines[k])
+    if pending_raw:
+        blocks.append(("raw", pending_raw))
+
+    tasks = [{
+        "source": p["msgid"],
+        "target_lang": target_lang,
+        "_block": p,
+    } for kind, p in blocks if kind == "entry"]
+
+    _set_total(len(tasks))
+
+    def _render() -> list:
+        out: list = []
+        for kind, payload in blocks:
+            if kind == "raw":
+                out.extend(payload)
+            else:
+                out.extend(payload["msgid_lines"])
+                out.extend(payload["msgstr_lines"])
+        return out
+
+    def _on_done(t: dict, tr: str) -> None:
+        block = t["_block"]
+        block["msgstr_lines"] = [f'msgstr "{_escape_po(tr)}"\n']
+        block["translated"] = True
+        _write_text_atomic(stopped_output, _render())
+
+    try:
+        _run_translations(tasks, workers, provider, api_url, api_key, model,
+                          _on_done)
     except StopTranslation:
-        _flush_remaining(i)
-        if stopped_output:
-            with open(stopped_output, "w", encoding="utf-8") as f:
-                f.writelines(out)
+        _write_text_atomic(stopped_output, _render())
         raise
 
     with open(output_path, "w", encoding="utf-8") as f:
-        f.writelines(out)
-    return count
+        f.writelines(_render())
+    _remove_quiet(stopped_output)
+    return sum(1 for _, p in blocks if isinstance(p, dict) and p.get("translated"))
 
 
 # ── CSV parser / writer ──────────────────────────────────────────────────────
 
 def translate_csv(input_path: str, output_path: str, stopped_output: str,
                   target_langs: list, provider: str, api_url: str,
-                  api_key: str, model: str, source_lang: str = "") -> int:
+                  api_key: str, model: str, source_lang: str = "",
+                  workers: int = 1) -> int:
     with open(input_path, "r", encoding="utf-8", newline="") as f:
         rows = list(csv.reader(f))
 
@@ -468,35 +615,74 @@ def translate_csv(input_path: str, output_path: str, stopped_output: str,
                 missing += 1
     _set_total(missing)
 
-    count = 0
+    tasks: list = []
+    for row_idx, row in enumerate(rows[1:], start=1):
+        if len(row) <= src_col:
+            continue
+        source = row[src_col]
+        if not source.strip():
+            continue
+        for tl in target_langs:
+            target_col = header.index(tl)
+            if row[target_col].strip():
+                continue
+            tasks.append({
+                "source": source,
+                "target_lang": tl,
+                "_row": row_idx,
+                "_col": target_col,
+            })
+
+    def _on_done(t: dict, tr: str) -> None:
+        rows[t["_row"]][t["_col"]] = tr
+        _write_csv_atomic(stopped_output, rows)
 
     try:
-        for row in rows[1:]:
-            if len(row) <= src_col:
-                continue
-            source = row[src_col]
-            if not source.strip():
-                continue
-            for tl in target_langs:
-                target_col = header.index(tl)
-                if row[target_col].strip():
-                    continue  # already translated — skip (resume)
-                _check_control()
-                _progress_start(source)
-                translated = translate_text(source, tl, provider,
-                                            api_url, api_key, model)
-                row[target_col] = translated
-                count += 1
-                _progress_done(source, translated)
+        _run_translations(tasks, workers, provider, api_url, api_key, model,
+                          _on_done)
     except StopTranslation:
-        if stopped_output:
-            with open(stopped_output, "w", encoding="utf-8", newline="") as f:
-                csv.writer(f).writerows(rows)
+        _write_csv_atomic(stopped_output, rows)
         raise
 
     with open(output_path, "w", encoding="utf-8", newline="") as f:
         csv.writer(f).writerows(rows)
-    return count
+    # Final file written — the partial is now redundant.
+    _remove_quiet(stopped_output)
+    return len(tasks)
+
+
+def _write_csv_atomic(path: str, rows: list) -> None:
+    if not path:
+        return
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            csv.writer(f).writerows(rows)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _write_text_atomic(path: str, lines: list) -> None:
+    if not path:
+        return
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _remove_quiet(path: str) -> None:
+    if not path:
+        return
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -518,12 +704,18 @@ def main() -> None:
     parser.add_argument("--prompts-file",  default="")
     parser.add_argument("--min-free-mb",   type=int, default=800,
                         help="Abort if available system RAM drops below this (MB). 0 disables.")
+    parser.add_argument("--workers",       type=int, default=1,
+                        help="Concurrent translation requests in flight. 1 = sequential.")
     args = parser.parse_args()
 
-    global _PROGRESS_FILE, _CONTROL_FILE, _PROMPTS, _MIN_FREE_MB
+    global _PROGRESS_FILE, _CONTROL_FILE, _PROMPTS, _MIN_FREE_MB, _INITIAL_PPID
     _PROGRESS_FILE = args.progress_file
     _CONTROL_FILE = args.control_file
     _MIN_FREE_MB = max(0, args.min_free_mb)
+    try:
+        _INITIAL_PPID = os.getppid()
+    except Exception:
+        _INITIAL_PPID = 0
 
     # Pre-flight: if we already start in trouble, fail loud before model load.
     if _MIN_FREE_MB > 0:
@@ -554,17 +746,19 @@ def main() -> None:
         sys.exit(1)
 
     try:
+        workers = max(1, args.workers)
         if ext == ".po":
             # PO is single-language; use the first target
             count = translate_po(
                 args.input, args.output, args.stopped_output, target_langs[0],
                 args.provider, args.api_url, args.api_key, args.model,
+                workers,
             )
         elif ext == ".csv":
             count = translate_csv(
                 args.input, args.output, args.stopped_output, target_langs,
                 args.provider, args.api_url, args.api_key, args.model,
-                args.source_lang,
+                args.source_lang, workers,
             )
         else:
             print(json.dumps({"type": "error", "message": f"Unsupported format: {ext}"}), flush=True)
