@@ -55,8 +55,10 @@ func run_update_flow(host: Control) -> void:
 
 func current_version() -> String:
 	var cfg := ConfigFile.new()
-	var disk_path := ProjectSettings.globalize_path(PLUGIN_CFG_PATH)
-	if cfg.load(disk_path) != OK:
+	# Read from the absolute disk path so Godot's resource cache doesn't
+	# return a stale version after the zip extraction overwrote the file.
+	var abs_path := ProjectSettings.globalize_path(PLUGIN_CFG_PATH)
+	if cfg.load(abs_path) != OK:
 		return "0.0.0"
 	return str(cfg.get_value("plugin", "version", "0.0.0"))
 
@@ -202,18 +204,16 @@ func _on_download_done(result: int, code: int, _h: PackedStringArray, _b: Packed
 	_status_dlg.queue_free()
 	_status_dlg = AcceptDialog.new()
 	_status_dlg.title = "Update Installed"
-	_status_dlg.dialog_text = ("LocalizationAI %s was installed successfully in res://addons/localization_ai/.\n\n" \
-			+ "Godot must be restarted to apply the update.") % _latest_tag
+	_status_dlg.dialog_text = ("LocalizationAI %s installed successfully.\n\n" \
+			+ "Godot will now restart to apply the update.") % _latest_tag
 	_status_dlg.get_ok_button().text = "Restart Godot"
-	_status_dlg.unfocusable = true
-
-	var do_restart = func() -> void:
-		_status_dlg.hide()
-		EditorInterface.get_resource_filesystem().scan()
+	# Both OK and window-close (X) must restart — update is already on disk.
+	var _do_restart := func() -> void:
+		if _status_dlg:
+			_status_dlg.hide()
 		EditorInterface.restart_editor(true)
-
-	_status_dlg.confirmed.connect(do_restart)
-	_status_dlg.canceled.connect(do_restart)
+	_status_dlg.confirmed.connect(_do_restart)
+	_status_dlg.canceled.connect(_do_restart)
 	EditorInterface.get_base_control().add_child(_status_dlg)
 	_status_dlg.popup_centered(Vector2i(560, 0))
 
