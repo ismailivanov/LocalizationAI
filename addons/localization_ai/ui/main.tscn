@@ -47,7 +47,6 @@ layout_mode = 2
 
 [node name="ParallelLbl" type="Label" parent="Tabs/Graph/Toolbar" unique_id=2101010101]
 layout_mode = 2
-text = "Parallel chains:"
 tooltip_text = "How many independent chains (Source → Translate → Export branches) run at the same time. This does NOT control concurrency within a single file — for that, see the Translate node's '⚡ Parallel requests' setting. The two stack: 2 chains × 4 requests = 8 in-flight calls total.
 
 Useful when:
@@ -55,12 +54,10 @@ Useful when:
 • Multiple File / Directory Sources feed separate Translate nodes.
 
 Has no effect on a single Directory Source feeding one Translate node — those files queue through the same node sequentially regardless of this value."
+text = "Parallel chains:"
 
 [node name="ParallelSpin" type="SpinBox" parent="Tabs/Graph/Toolbar" unique_id=2101010102]
 layout_mode = 2
-min_value = 1.0
-max_value = 8.0
-value = 1.0
 tooltip_text = "How many independent chains (Source → Translate → Export branches) run at the same time. This does NOT control concurrency within a single file — for that, see the Translate node's '⚡ Parallel requests' setting. The two stack: 2 chains × 4 requests = 8 in-flight calls total.
 
 Useful when:
@@ -68,19 +65,22 @@ Useful when:
 • Multiple File / Directory Sources feed separate Translate nodes.
 
 Has no effect on a single Directory Source feeding one Translate node — those files queue through the same node sequentially regardless of this value."
+min_value = 1.0
+max_value = 8.0
+value = 1.0
 
 [node name="EtaLbl" type="Label" parent="Tabs/Graph/Toolbar" unique_id=2101010103]
-layout_mode = 2
 custom_minimum_size = Vector2(220, 0)
+layout_mode = 2
 text = "  ETA: —"
 
 [node name="VSep2" type="VSeparator" parent="Tabs/Graph/Toolbar" unique_id=2101010104]
 layout_mode = 2
 
 [node name="HintLbl" type="Label" parent="Tabs/Graph/Toolbar" unique_id=1365955555]
-layout_mode = 2
+visible = false
 custom_minimum_size = Vector2(220, 0)
-text = ""
+layout_mode = 2
 clip_text = true
 
 [node name="SaveBtn" type="Button" parent="Tabs/Graph/Toolbar" unique_id=1847161996]
@@ -94,40 +94,6 @@ text = "Load Workflow"
 [node name="ClearGraphBtn" type="Button" parent="Tabs/Graph/Toolbar" unique_id=84224160]
 layout_mode = 2
 text = "Clear Graph"
-
-[node name="GraphEdit" type="GraphEdit" parent="Tabs/Graph" unique_id=237759598]
-layout_mode = 2
-size_flags_horizontal = 3
-size_flags_vertical = 3
-
-[node name="OutputHeader" type="HBoxContainer" parent="Tabs/Graph" unique_id=587899927]
-layout_mode = 2
-
-[node name="Spacer" type="Control" parent="Tabs/Graph/OutputHeader" unique_id=1975780636]
-layout_mode = 2
-size_flags_horizontal = 3
-
-[node name="ClearBtn" type="Button" parent="Tabs/Graph/OutputHeader" unique_id=1817209738]
-layout_mode = 2
-text = "Clear Log"
-
-[node name="OutputTabs" type="TabContainer" parent="Tabs/Graph" unique_id=664105172]
-custom_minimum_size = Vector2(0, 180)
-layout_mode = 2
-size_flags_horizontal = 3
-current_tab = 0
-tabs_visible = false
-
-[node name="Log" type="ScrollContainer" parent="Tabs/Graph/OutputTabs" unique_id=1721880725]
-layout_mode = 2
-metadata/_tab_index = 0
-
-[node name="LogOutput" type="RichTextLabel" parent="Tabs/Graph/OutputTabs/Log" unique_id=1151206162]
-layout_mode = 2
-size_flags_horizontal = 3
-size_flags_vertical = 3
-bbcode_enabled = true
-scroll_following = true
 
 [node name="Models" type="MarginContainer" parent="Tabs" unique_id=1385482589]
 visible = false
