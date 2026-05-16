@@ -7,8 +7,9 @@ This wiki is the long-form companion to the [README](https://github.com/ismailiv
 ## Pages
 
 - **[Getting Started](Getting-Started.md)** — install the plugin, pick a backend, translate your first file.
+- **[Node Reference](Node-Reference.md)** — every node, every port, every setting.
 
-More pages will land here as the plugin grows. Likely next: graph node reference, custom prompts, parallel settings, partial/resume, troubleshooting.
+More pages will land here as the plugin grows. Likely next: custom prompts deep dive, parallel settings, partial/resume, troubleshooting.
 
 ## What this plugin is (and isn't)
 
