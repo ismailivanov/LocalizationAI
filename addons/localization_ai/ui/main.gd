@@ -1344,7 +1344,8 @@ func _read_plugin_info() -> Dictionary:
 		"author": "",
 		"description": "",
 	}
-	if cfg.load(PLUGIN_CFG_PATH) != OK:
+	var disk_path := ProjectSettings.globalize_path(PLUGIN_CFG_PATH)
+	if cfg.load(disk_path) != OK:
 		return out
 	for key in out.keys():
 		var v = cfg.get_value("plugin", key, out[key])
@@ -1368,180 +1369,11 @@ func _open_latest_release() -> void:
 # ── Auto-update ──────────────────────────────────────────────────────────────
 
 func _start_auto_update() -> void:
-	if _about_zipball_url.is_empty() or _about_latest_tag.is_empty():
-		return
-	var dlg := ConfirmationDialog.new()
-	dlg.title = "Install LocalizationAI %s" % _about_latest_tag
-	dlg.dialog_text = ("Download %s and replace the plugin in res://addons/localization_ai/?\n\n" \
-			+ "• Your saved workflows (res://addons/localization_ai/workflows/) are preserved.\n" \
-			+ "• API keys live in user:// and are not touched.\n" \
-			+ "• Save unrelated work — a restart is recommended after install.") \
-			% _about_latest_tag
-	dlg.confirmed.connect(_do_auto_update)
-	add_child(dlg)
-	dlg.popup_centered()
-
-
-func _do_auto_update() -> void:
-	_about_install_btn.disabled = true
-	_about_open_btn.disabled = true
-	_about_check_btn.disabled = true
-	_about_status_lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
-	_about_status_lbl.text = "Downloading %s…" % _about_latest_tag
-
-	var staging_dir := ProjectSettings.globalize_path("user://localization_ai")
-	DirAccess.make_dir_recursive_absolute(staging_dir)
-	var zip_abs := staging_dir.path_join("update.zip")
-	if FileAccess.file_exists(zip_abs):
-		DirAccess.remove_absolute(zip_abs)
-
-	if _about_update_http == null:
-		_about_update_http = HTTPRequest.new()
-		_about_update_http.request_completed.connect(_on_update_downloaded)
-		add_child(_about_update_http)
-	_about_update_http.download_file = zip_abs
-	_about_update_http.max_redirects = 10
-	var err := _about_update_http.request(_about_zipball_url, ["User-Agent: LocalizationAI"])
-	if err != OK:
-		_install_failed("Download failed to start (error %d)." % err)
-
-
-func _on_update_downloaded(result: int, code: int, _h: PackedStringArray, _b: PackedByteArray) -> void:
-	if result != HTTPRequest.RESULT_SUCCESS:
-		_install_failed("Network error (result %d)." % result)
-		return
-	if code >= 400:
-		_install_failed("Server returned HTTP %d." % code)
-		return
-	_about_status_lbl.text = "Installing…"
-	var zip_abs := ProjectSettings.globalize_path("user://localization_ai").path_join("update.zip")
-	var err := _apply_update_zip(zip_abs)
-	if not err.is_empty():
-		_install_failed("Install failed: " + err)
-		return
-
-	_about_status_lbl.add_theme_color_override("font_color", Color(0.4, 0.95, 0.55))
-	_about_status_lbl.text = "Installed %s. Restart Godot to load the new code." % _about_latest_tag
-	_about_install_btn.visible = false
-	_about_open_btn.visible = false
-	_about_check_btn.disabled = false
-
-	var done := AcceptDialog.new()
-	done.title = "Update installed"
-	done.dialog_text = ("LocalizationAI %s was installed in res://addons/localization_ai/.\n\n" \
-			+ "Close and reopen Godot for the changes to fully apply.") % _about_latest_tag
-	done.add_button("Restart now", true, "restart")
-	done.custom_action.connect(func(action: String) -> void:
-		if action == "restart":
-			done.hide()
-			EditorInterface.restart_editor(true)
-	)
-	add_child(done)
-	done.popup_centered()
-
-
-func _install_failed(msg: String) -> void:
-	_about_install_btn.disabled = false
-	_about_open_btn.disabled = false
-	_about_check_btn.disabled = false
-	_about_status_lbl.add_theme_color_override("font_color", Color(1, 0.5, 0.5))
-	_about_status_lbl.text = msg
-
-
-func _apply_update_zip(zip_abs: String) -> String:
-	if not FileAccess.file_exists(zip_abs):
-		return "downloaded file is missing"
-
-	var reader := ZIPReader.new()
-	if reader.open(zip_abs) != OK:
-		return "cannot open downloaded zip"
-
-	var files: PackedStringArray = reader.get_files()
-	var addon_zip_prefix := ""
-	for f in files:
-		var idx := f.find("/addons/localization_ai/")
-		if idx >= 0:
-			addon_zip_prefix = f.substr(0, idx + 1) + "addons/localization_ai/"
-			break
-	if addon_zip_prefix.is_empty():
-		reader.close()
-		return "zip is missing addons/localization_ai/"
-
-	var addon_abs := ProjectSettings.globalize_path("res://addons/localization_ai")
-	var workflows_src := addon_abs.path_join("workflows")
-	var workflows_backup := ProjectSettings.globalize_path("user://localization_ai/workflows_backup")
-
-	if DirAccess.dir_exists_absolute(workflows_src):
-		_au_delete_recursive(workflows_backup)
-		DirAccess.make_dir_recursive_absolute(workflows_backup)
-		_au_copy_dir_recursive(workflows_src, workflows_backup)
-
-	_au_delete_recursive(addon_abs)
-	DirAccess.make_dir_recursive_absolute(addon_abs)
-
-	for f in files:
-		if not f.begins_with(addon_zip_prefix):
-			continue
-		var rel := f.substr(addon_zip_prefix.length())
-		if rel.is_empty() or rel.ends_with("/"):
-			continue
-		var out_abs := addon_abs.path_join(rel)
-		DirAccess.make_dir_recursive_absolute(out_abs.get_base_dir())
-		var fo := FileAccess.open(out_abs, FileAccess.WRITE)
-		if fo == null:
-			reader.close()
-			return "cannot write " + out_abs
-		fo.store_buffer(reader.read_file(f))
-		fo.close()
-
-	reader.close()
-
-	if DirAccess.dir_exists_absolute(workflows_backup):
-		var workflows_dest := addon_abs.path_join("workflows")
-		DirAccess.make_dir_recursive_absolute(workflows_dest)
-		_au_copy_dir_recursive(workflows_backup, workflows_dest)
-
-	DirAccess.remove_absolute(zip_abs)
-	return ""
-
-
-func _au_delete_recursive(abs_path: String) -> void:
-	if not DirAccess.dir_exists_absolute(abs_path):
-		return
-	var d := DirAccess.open(abs_path)
-	if d == null:
-		return
-	d.list_dir_begin()
-	var entry := d.get_next()
-	while entry != "":
-		if entry != "." and entry != "..":
-			var full := abs_path.path_join(entry)
-			if d.current_is_dir():
-				_au_delete_recursive(full)
-			else:
-				DirAccess.remove_absolute(full)
-		entry = d.get_next()
-	d.list_dir_end()
-	DirAccess.remove_absolute(abs_path)
-
-
-func _au_copy_dir_recursive(src_abs: String, dst_abs: String) -> void:
-	DirAccess.make_dir_recursive_absolute(dst_abs)
-	var d := DirAccess.open(src_abs)
-	if d == null:
-		return
-	d.list_dir_begin()
-	var entry := d.get_next()
-	while entry != "":
-		if entry != "." and entry != "..":
-			var src := src_abs.path_join(entry)
-			var dst := dst_abs.path_join(entry)
-			if d.current_is_dir():
-				_au_copy_dir_recursive(src, dst)
-			else:
-				DirAccess.copy_absolute(src, dst)
-		entry = d.get_next()
-	d.list_dir_end()
+	if _settings_window:
+		_settings_window.hide()
+	var updater: Node = preload("res://addons/localization_ai/ui/updater.gd").new()
+	EditorInterface.get_base_control().add_child(updater)
+	updater.run_update_flow(EditorInterface.get_base_control())
 
 
 func _check_for_updates() -> void:
