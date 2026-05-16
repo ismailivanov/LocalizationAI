@@ -69,9 +69,4 @@ MIT — see [LICENSE](LICENSE).
 
 ## Use at your own risk
 
-I built this for my own projects. It works for me, but it was developed with heavy AI assistance and there's **no test suite, no CI, no formal review**. Before you point it at anything important:
-
-- **Back up your `.csv` / `.po` files.** Bad model output is still a write.
-- **Spot-check the output.** LLMs occasionally drop placeholders (`%s`, `{name}`), invent line breaks, or "translate" proper nouns that shouldn't be touched.
-- **Watch memory on local models.** The guard helps but isn't a guarantee.
-- **Your OpenRouter / Ollama costs and rate limits are yours.** OpenRouter keys are stored in a local keyring under Godot's `user://` directory (outside the project repo), so workflow JSONs are safe to commit. The keyring file itself is plaintext — anyone with shell access to your account can read it.
+Architecture and design are mine; AI did a lot of the typing. There's no test suite or CI, so back up your `.csv` / `.po` files before pointing this at anything important and spot-check the output — LLMs occasionally drop placeholders or translate things they shouldn't. OpenRouter / Ollama costs and rate limits are yours; API keys live in a plaintext keyring under Godot's `user://`.
