@@ -278,6 +278,8 @@ func shutdown_translations() -> void:
 	# Called by the plugin on editor exit / plugin disable. Sends stop to every
 	# running Translate node and blocks until its Python child has flushed the
 	# _progress partial, so closing the editor mid-run doesn't lose work.
+	if _graph == null:
+		return
 	for child in _graph.get_children():
 		if child.has_method("is_running") and child.is_running():
 			if child.has_method("stop_translation"):

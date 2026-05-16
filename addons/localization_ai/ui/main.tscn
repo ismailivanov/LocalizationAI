@@ -95,6 +95,40 @@ text = "Load Workflow"
 layout_mode = 2
 text = "Clear Graph"
 
+[node name="GraphEdit" type="GraphEdit" parent="Tabs/Graph" unique_id=237759598]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="OutputHeader" type="HBoxContainer" parent="Tabs/Graph" unique_id=587899927]
+layout_mode = 2
+
+[node name="Spacer" type="Control" parent="Tabs/Graph/OutputHeader" unique_id=1975780636]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="ClearBtn" type="Button" parent="Tabs/Graph/OutputHeader" unique_id=1817209738]
+layout_mode = 2
+text = "Clear Log"
+
+[node name="OutputTabs" type="TabContainer" parent="Tabs/Graph" unique_id=664105172]
+custom_minimum_size = Vector2(0, 180)
+layout_mode = 2
+size_flags_horizontal = 3
+current_tab = 0
+tabs_visible = false
+
+[node name="Log" type="ScrollContainer" parent="Tabs/Graph/OutputTabs" unique_id=1721880725]
+layout_mode = 2
+metadata/_tab_index = 0
+
+[node name="LogOutput" type="RichTextLabel" parent="Tabs/Graph/OutputTabs/Log" unique_id=1151206162]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+bbcode_enabled = true
+scroll_following = true
+
 [node name="Models" type="MarginContainer" parent="Tabs" unique_id=1385482589]
 visible = false
 layout_mode = 2
