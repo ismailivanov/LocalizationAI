@@ -1129,7 +1129,10 @@ func _update_workflow_label() -> void:
 const PLUGIN_CFG_PATH := "res://addons/localization_ai/plugin.cfg"
 const GITHUB_REPO := "ismailivanov/LocalizationAI"
 const GITHUB_RELEASES_URL := "https://github.com/" + GITHUB_REPO + "/releases"
-const GITHUB_API_LATEST := "https://api.github.com/repos/" + GITHUB_REPO + "/releases/latest"
+# /releases/latest excludes pre-releases. The list endpoint returns the full
+# set newest-first; we pick the first non-draft entry and optionally skip
+# pre-releases based on user preference.
+const GITHUB_API_LATEST := "https://api.github.com/repos/" + GITHUB_REPO + "/releases?per_page=10"
 const DONATE_URL := "https://buymeacoffee.com/carbon06"
 const LOGO_CREDIT_URL := "https://www.behance.net/warcedesign"
 
@@ -1137,8 +1140,33 @@ var _settings_window: AcceptDialog
 var _about_status_lbl: Label
 var _about_check_btn: Button
 var _about_open_btn: Button
+var _about_install_btn: Button
+var _about_stable_only_chk: CheckBox
 var _about_http: HTTPRequest
+var _about_update_http: HTTPRequest
 var _about_latest_url: String = ""
+var _about_latest_tag: String = ""
+var _about_zipball_url: String = ""
+
+# Persistent user prefs live alongside the keyring under user://localization_ai/.
+const _PREFS_FILE := "user://localization_ai/prefs.cfg"
+const _PREFS_SECTION := "updates"
+
+
+func _pref_get(key: String, fallback: Variant) -> Variant:
+	var cfg := ConfigFile.new()
+	if cfg.load(_PREFS_FILE) != OK:
+		return fallback
+	return cfg.get_value(_PREFS_SECTION, key, fallback)
+
+
+func _pref_set(key: String, value: Variant) -> void:
+	DirAccess.make_dir_recursive_absolute(
+		ProjectSettings.globalize_path("user://localization_ai"))
+	var cfg := ConfigFile.new()
+	cfg.load(_PREFS_FILE)
+	cfg.set_value(_PREFS_SECTION, key, value)
+	cfg.save(_PREFS_FILE)
 
 
 func _build_settings_button() -> void:
@@ -1257,11 +1285,27 @@ func _build_settings_window() -> AcceptDialog:
 	repo_btn.pressed.connect(_open_github_repo)
 	btn_row.add_child(repo_btn)
 
+	_about_install_btn = Button.new()
+	_about_install_btn.text = "⬇  Install update"
+	_about_install_btn.tooltip_text = "Download the new release and replace the plugin files in this project."
+	_about_install_btn.visible = false
+	_about_install_btn.pressed.connect(_start_auto_update)
+	btn_row.add_child(_about_install_btn)
+
 	_about_open_btn = Button.new()
-	_about_open_btn.text = "⬇  Open latest release"
+	_about_open_btn.text = "🌐  Open release page"
 	_about_open_btn.visible = false
 	_about_open_btn.pressed.connect(_open_latest_release)
 	btn_row.add_child(_about_open_btn)
+
+	_about_stable_only_chk = CheckBox.new()
+	_about_stable_only_chk.text = "Only check stable releases (skip pre-releases)"
+	_about_stable_only_chk.tooltip_text = "When off, the update check picks up alpha / beta / rc releases too. Turn this on once a v1.0 stable exists and you only want to be notified about non-prerelease versions."
+	_about_stable_only_chk.button_pressed = bool(_pref_get("stable_only", false))
+	_about_stable_only_chk.toggled.connect(func(p: bool) -> void:
+		_pref_set("stable_only", p)
+	)
+	vb.add_child(_about_stable_only_chk)
 
 	_about_status_lbl = Label.new()
 	_about_status_lbl.text = ""
@@ -1319,6 +1363,185 @@ func _open_latest_release() -> void:
 		OS.shell_open(_about_latest_url)
 
 
+# ── Auto-update ──────────────────────────────────────────────────────────────
+
+func _start_auto_update() -> void:
+	if _about_zipball_url.is_empty() or _about_latest_tag.is_empty():
+		return
+	var dlg := ConfirmationDialog.new()
+	dlg.title = "Install LocalizationAI %s" % _about_latest_tag
+	dlg.dialog_text = ("Download %s and replace the plugin in res://addons/localization_ai/?\n\n" \
+			+ "• Your saved workflows (res://addons/localization_ai/workflows/) are preserved.\n" \
+			+ "• API keys live in user:// and are not touched.\n" \
+			+ "• Save unrelated work — a restart is recommended after install.") \
+			% _about_latest_tag
+	dlg.confirmed.connect(_do_auto_update)
+	add_child(dlg)
+	dlg.popup_centered()
+
+
+func _do_auto_update() -> void:
+	_about_install_btn.disabled = true
+	_about_open_btn.disabled = true
+	_about_check_btn.disabled = true
+	_about_status_lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
+	_about_status_lbl.text = "Downloading %s…" % _about_latest_tag
+
+	var staging_dir := ProjectSettings.globalize_path("user://localization_ai")
+	DirAccess.make_dir_recursive_absolute(staging_dir)
+	var zip_abs := staging_dir.path_join("update.zip")
+	if FileAccess.file_exists(zip_abs):
+		DirAccess.remove_absolute(zip_abs)
+
+	if _about_update_http == null:
+		_about_update_http = HTTPRequest.new()
+		_about_update_http.request_completed.connect(_on_update_downloaded)
+		add_child(_about_update_http)
+	_about_update_http.download_file = zip_abs
+	_about_update_http.max_redirects = 10
+	var err := _about_update_http.request(_about_zipball_url, ["User-Agent: LocalizationAI"])
+	if err != OK:
+		_install_failed("Download failed to start (error %d)." % err)
+
+
+func _on_update_downloaded(result: int, code: int, _h: PackedStringArray, _b: PackedByteArray) -> void:
+	if result != HTTPRequest.RESULT_SUCCESS:
+		_install_failed("Network error (result %d)." % result)
+		return
+	if code >= 400:
+		_install_failed("Server returned HTTP %d." % code)
+		return
+	_about_status_lbl.text = "Installing…"
+	var zip_abs := ProjectSettings.globalize_path("user://localization_ai").path_join("update.zip")
+	var err := _apply_update_zip(zip_abs)
+	if not err.is_empty():
+		_install_failed("Install failed: " + err)
+		return
+
+	_about_status_lbl.add_theme_color_override("font_color", Color(0.4, 0.95, 0.55))
+	_about_status_lbl.text = "Installed %s. Restart Godot to load the new code." % _about_latest_tag
+	_about_install_btn.visible = false
+	_about_open_btn.visible = false
+	_about_check_btn.disabled = false
+
+	var done := AcceptDialog.new()
+	done.title = "Update installed"
+	done.dialog_text = ("LocalizationAI %s was installed in res://addons/localization_ai/.\n\n" \
+			+ "Close and reopen Godot for the changes to fully apply.") % _about_latest_tag
+	done.add_button("Restart now", true, "restart")
+	done.custom_action.connect(func(action: String) -> void:
+		if action == "restart":
+			done.hide()
+			EditorInterface.restart_editor(true)
+	)
+	add_child(done)
+	done.popup_centered()
+
+
+func _install_failed(msg: String) -> void:
+	_about_install_btn.disabled = false
+	_about_open_btn.disabled = false
+	_about_check_btn.disabled = false
+	_about_status_lbl.add_theme_color_override("font_color", Color(1, 0.5, 0.5))
+	_about_status_lbl.text = msg
+
+
+func _apply_update_zip(zip_abs: String) -> String:
+	if not FileAccess.file_exists(zip_abs):
+		return "downloaded file is missing"
+
+	var reader := ZIPReader.new()
+	if reader.open(zip_abs) != OK:
+		return "cannot open downloaded zip"
+
+	var files: PackedStringArray = reader.get_files()
+	var addon_zip_prefix := ""
+	for f in files:
+		var idx := f.find("/addons/localization_ai/")
+		if idx >= 0:
+			addon_zip_prefix = f.substr(0, idx + 1) + "addons/localization_ai/"
+			break
+	if addon_zip_prefix.is_empty():
+		reader.close()
+		return "zip is missing addons/localization_ai/"
+
+	var addon_abs := ProjectSettings.globalize_path("res://addons/localization_ai")
+	var workflows_src := addon_abs.path_join("workflows")
+	var workflows_backup := ProjectSettings.globalize_path("user://localization_ai/workflows_backup")
+
+	if DirAccess.dir_exists_absolute(workflows_src):
+		_au_delete_recursive(workflows_backup)
+		DirAccess.make_dir_recursive_absolute(workflows_backup)
+		_au_copy_dir_recursive(workflows_src, workflows_backup)
+
+	_au_delete_recursive(addon_abs)
+	DirAccess.make_dir_recursive_absolute(addon_abs)
+
+	for f in files:
+		if not f.begins_with(addon_zip_prefix):
+			continue
+		var rel := f.substr(addon_zip_prefix.length())
+		if rel.is_empty() or rel.ends_with("/"):
+			continue
+		var out_abs := addon_abs.path_join(rel)
+		DirAccess.make_dir_recursive_absolute(out_abs.get_base_dir())
+		var fo := FileAccess.open(out_abs, FileAccess.WRITE)
+		if fo == null:
+			reader.close()
+			return "cannot write " + out_abs
+		fo.store_buffer(reader.read_file(f))
+		fo.close()
+
+	reader.close()
+
+	if DirAccess.dir_exists_absolute(workflows_backup):
+		var workflows_dest := addon_abs.path_join("workflows")
+		DirAccess.make_dir_recursive_absolute(workflows_dest)
+		_au_copy_dir_recursive(workflows_backup, workflows_dest)
+
+	DirAccess.remove_absolute(zip_abs)
+	return ""
+
+
+func _au_delete_recursive(abs_path: String) -> void:
+	if not DirAccess.dir_exists_absolute(abs_path):
+		return
+	var d := DirAccess.open(abs_path)
+	if d == null:
+		return
+	d.list_dir_begin()
+	var entry := d.get_next()
+	while entry != "":
+		if entry != "." and entry != "..":
+			var full := abs_path.path_join(entry)
+			if d.current_is_dir():
+				_au_delete_recursive(full)
+			else:
+				DirAccess.remove_absolute(full)
+		entry = d.get_next()
+	d.list_dir_end()
+	DirAccess.remove_absolute(abs_path)
+
+
+func _au_copy_dir_recursive(src_abs: String, dst_abs: String) -> void:
+	DirAccess.make_dir_recursive_absolute(dst_abs)
+	var d := DirAccess.open(src_abs)
+	if d == null:
+		return
+	d.list_dir_begin()
+	var entry := d.get_next()
+	while entry != "":
+		if entry != "." and entry != "..":
+			var src := src_abs.path_join(entry)
+			var dst := dst_abs.path_join(entry)
+			if d.current_is_dir():
+				_au_copy_dir_recursive(src, dst)
+			else:
+				DirAccess.copy_absolute(src, dst)
+		entry = d.get_next()
+	d.list_dir_end()
+
+
 func _check_for_updates() -> void:
 	if _about_http == null:
 		return
@@ -1354,26 +1577,55 @@ func _on_update_check_done(result: int, code: int, _headers: PackedStringArray, 
 		_about_status_lbl.add_theme_color_override("font_color", Color(1, 0.5, 0.5))
 		_about_status_lbl.text = "Could not parse GitHub response."
 		return
-	var data: Dictionary = parser.get_data()
+	# /releases returns an array, newest-first. Pick the first non-draft entry,
+	# optionally skipping pre-releases when the user turned on "stable only".
+	var arr = parser.get_data()
+	if typeof(arr) != TYPE_ARRAY or (arr as Array).is_empty():
+		_about_status_lbl.add_theme_color_override("font_color", Color(1, 0.8, 0.4))
+		_about_status_lbl.text = "No releases published yet on GitHub."
+		return
+	var stable_only := bool(_pref_get("stable_only", false))
+	var data: Dictionary = {}
+	for entry in arr:
+		if typeof(entry) != TYPE_DICTIONARY:
+			continue
+		if bool(entry.get("draft", false)):
+			continue
+		if stable_only and bool(entry.get("prerelease", false)):
+			continue
+		data = entry
+		break
 	var tag := str(data.get("tag_name", "")).strip_edges()
 	_about_latest_url = str(data.get("html_url", GITHUB_RELEASES_URL))
 	if tag.is_empty():
 		_about_status_lbl.add_theme_color_override("font_color", Color(1, 0.8, 0.4))
-		_about_status_lbl.text = "Latest release has no tag."
+		_about_status_lbl.text = "No stable releases yet on GitHub." if stable_only \
+				else "No public releases yet on GitHub."
 		return
+	var is_prerelease := bool(data.get("prerelease", false))
+	_about_latest_tag = tag
+	_about_zipball_url = str(data.get("zipball_url", ""))
+	if _about_zipball_url.is_empty():
+		_about_zipball_url = "https://github.com/" + GITHUB_REPO + "/archive/refs/tags/" + tag + ".zip"
 
 	var current := _current_version()
 	var cmp := _compare_versions(tag, current)
+	var prerelease_tag := "  (pre-release)" if is_prerelease else ""
 	if cmp > 0:
 		_about_status_lbl.add_theme_color_override("font_color", Color(0.4, 0.95, 0.55))
-		_about_status_lbl.text = "Update available: %s  (you have %s)" % [tag, current]
+		_about_status_lbl.text = "Update available: %s%s  (you have %s)" % [tag, prerelease_tag, current]
+		_about_install_btn.visible = true
 		_about_open_btn.visible = true
 	elif cmp == 0:
 		_about_status_lbl.add_theme_color_override("font_color", Color(0.55, 0.75, 1.0))
-		_about_status_lbl.text = "You are on the latest version (%s)." % current
+		_about_status_lbl.text = "You are on the latest version (%s)%s." % [current, prerelease_tag]
+		_about_install_btn.visible = false
+		_about_open_btn.visible = false
 	else:
 		_about_status_lbl.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
-		_about_status_lbl.text = "Your version (%s) is ahead of the latest release (%s)." % [current, tag]
+		_about_status_lbl.text = "Your version (%s) is ahead of the latest release (%s)%s." % [current, tag, prerelease_tag]
+		_about_install_btn.visible = false
+		_about_open_btn.visible = false
 
 
 # Returns 1 if a > b, -1 if a < b, 0 if equal. Strips a leading 'v', compares
