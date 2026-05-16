@@ -5,6 +5,7 @@ A Godot 4.7 editor plugin that translates `.csv` and `.po` localization files wi
 ![Godot 4.7+](https://img.shields.io/badge/Godot-4.7%2B-478CBF?logo=godot-engine&logoColor=white)
 ![Python 3](https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+[![Wiki](https://img.shields.io/badge/docs-wiki-blue)](https://github.com/ismailivanov/LocalizationAI/wiki)
 
 <img width="2560" height="1367" alt="image" src="https://github.com/user-attachments/assets/42500718-282d-46df-af59-443f21b099fa" />
 
@@ -36,7 +37,7 @@ No Python packages to install. The translator is stdlib-only; you just need `pyt
 4. Connect `File Source → Translate → Export` (left-to-right green ports).
 5. **▶ Run**.
 
-A starter graph lives at `addons/localization_ai/workflows/basic_workflow.json`. The [Getting Started](docs/Getting-Started.md) page walks through each setting in more detail.
+A starter graph lives at `addons/localization_ai/workflows/basic_workflow.json`. The [**📖 Wiki**](https://github.com/ismailivanov/LocalizationAI/wiki) has a Getting Started walkthrough and a full Node Reference covering every setting.
 
 ## Standalone CLI
 
