@@ -77,6 +77,12 @@ text = "  ETA: —"
 [node name="VSep2" type="VSeparator" parent="Tabs/Graph/Toolbar" unique_id=2101010104]
 layout_mode = 2
 
+[node name="HintLbl" type="Label" parent="Tabs/Graph/Toolbar" unique_id=1365955555]
+layout_mode = 2
+custom_minimum_size = Vector2(220, 0)
+text = ""
+clip_text = true
+
 [node name="SaveBtn" type="Button" parent="Tabs/Graph/Toolbar" unique_id=1847161996]
 layout_mode = 2
 text = "Save Workflow"
@@ -88,12 +94,6 @@ text = "Load Workflow"
 [node name="ClearGraphBtn" type="Button" parent="Tabs/Graph/Toolbar" unique_id=84224160]
 layout_mode = 2
 text = "Clear Graph"
-
-[node name="HintLbl" type="Label" parent="Tabs/Graph/Toolbar" unique_id=1365955555]
-layout_mode = 2
-size_flags_horizontal = 3
-text = "  (right-click on graph for context menu)"
-horizontal_alignment = 2
 
 [node name="GraphEdit" type="GraphEdit" parent="Tabs/Graph" unique_id=237759598]
 layout_mode = 2

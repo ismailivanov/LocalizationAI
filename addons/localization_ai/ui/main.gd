@@ -984,7 +984,9 @@ func _update_workflow_label() -> void:
 		_hint_lbl.text = ""
 		_hint_lbl.visible = false
 	else:
-		_hint_lbl.text = "  📁 %s" % _current_workflow_path.get_file()
+		_hint_lbl.text = "📁 %s   " % _current_workflow_path.get_file()
+		_hint_lbl.tooltip_text = _current_workflow_path
+		_hint_lbl.add_theme_color_override("font_color", Color(0.6, 0.85, 1.0))
 		_hint_lbl.visible = true
 
 
@@ -1012,11 +1014,10 @@ func _build_settings_button() -> void:
 	if toolbar == null:
 		return
 
-	# HintLbl shows the loaded workflow filename; hide it when nothing is loaded
-	# so the toolbar doesn't show a stray "(unsaved…)" snippet next to Settings.
+	# HintLbl shows the loaded workflow filename. It sits between the toolbar
+	# separator and the Save/Load buttons so it's the first thing you read in
+	# that group. Hidden when nothing is loaded so the toolbar stays tidy.
 	if _hint_lbl != null:
-		_hint_lbl.size_flags_horizontal = Control.SIZE_FILL
-		_hint_lbl.clip_text = true
 		_hint_lbl.visible = false
 
 	# Spacer absorbs leftover space → version + Settings sit at the right edge.

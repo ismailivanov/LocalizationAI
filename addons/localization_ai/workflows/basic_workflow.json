@@ -1,70 +1,56 @@
 {
 	"connections": [
 		{
-			"from": "@GraphNode@24354",
+			"from": "@GraphNode@27609",
 			"from_port": 0,
-			"to": "@GraphNode@24345",
+			"to": "@GraphNode@27600",
 			"to_port": 0
 		},
 		{
-			"from": "@GraphNode@24456",
+			"from": "@GraphNode@27677",
 			"from_port": 0,
-			"to": "@GraphNode@24354",
+			"to": "@GraphNode@27609",
 			"to_port": 1
 		},
 		{
-			"from": "@GraphNode@24422",
+			"from": "@GraphNode@27697",
 			"from_port": 0,
-			"to": "@GraphNode@24354",
+			"to": "@GraphNode@27609",
 			"to_port": 0
 		}
 	],
 	"nodes": [
 		{
 			"kind": "export",
-			"name": "@GraphNode@24345",
+			"name": "@GraphNode@27600",
 			"pos": [
 				1140.0,
 				780.0
 			],
 			"state": {
-				"destination": "/home/carbon/Documents/GitHub/LocalizationAI/addons/localization_ai/example/exports",
+				"destination": "",
 				"file_name": ""
 			}
 		},
 		{
 			"kind": "translate",
-			"name": "@GraphNode@24354",
+			"name": "@GraphNode@27609",
 			"pos": [
 				640.0,
 				380.0
 			],
 			"state": {
 				"api": "",
-				"model": "x-ai/grok-4.3",
-				"provider": 1,
+				"model": "gpt-oss:20b",
+				"provider": 0,
 				"source_lang": "en",
 				"target_langs": "bg,da,tr",
 				"workers": 4
 			}
 		},
 		{
-			"kind": "directory_source",
-			"name": "@GraphNode@24422",
-			"pos": [
-				100.0,
-				380.0
-			],
-			"state": {
-				"directory": "/home/carbon/Documents/GitHub/LocalizationAI/addons/localization_ai/example",
-				"filter": 1,
-				"recursive": false,
-				"start_from": "res://addons/localization_ai/example/dialogues.csv"
-			}
-		},
-		{
 			"kind": "prompt",
-			"name": "@GraphNode@24456",
+			"name": "@GraphNode@27677",
 			"pos": [
 				120.0,
 				640.0
@@ -73,9 +59,20 @@
 				"prompt": "Don’t forget that this is a medieval-themed game; translate all the dialogue accordingly. Also, don’t translate the words inside the {} brackets—those are commands for the game.",
 				"scope_idx": 0,
 				"size": [
-					399.999908447266,
+					399.999877929688,
 					240.0
 				]
+			}
+		},
+		{
+			"kind": "file_source",
+			"name": "@GraphNode@27697",
+			"pos": [
+				180.0,
+				420.0
+			],
+			"state": {
+				"file": "res://addons/localization_ai/example/dialogues.csv"
 			}
 		}
 	],
