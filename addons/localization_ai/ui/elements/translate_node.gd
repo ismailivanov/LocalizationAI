@@ -21,8 +21,8 @@ const LANGUAGES := [
 	["bg", "Bulgarian"],
 	["my", "Burmese"],
 	["ca", "Catalan"],
-	["zh-CN", "Chinese (Simplified)"],
-	["zh-TW", "Chinese (Traditional)"],
+	["zh_CN", "Chinese (Simplified)"],
+	["zh_TW", "Chinese (Traditional)"],
 	["hr", "Croatian"],
 	["cs", "Czech"],
 	["da", "Danish"],
@@ -63,7 +63,7 @@ const LANGUAGES := [
 	["fa", "Persian"],
 	["pl", "Polish"],
 	["pt", "Portuguese"],
-	["pt-BR", "Portuguese (Brazil)"],
+	["pt_BR", "Portuguese (Brazil)"],
 	["pa", "Punjabi"],
 	["ro", "Romanian"],
 	["ru", "Russian"],
@@ -72,7 +72,7 @@ const LANGUAGES := [
 	["sk", "Slovak"],
 	["sl", "Slovenian"],
 	["es", "Spanish"],
-	["es-419", "Spanish (Latin America)"],
+	["es_419", "Spanish (Latin America)"],
 	["sw", "Swahili"],
 	["sv", "Swedish"],
 	["tl", "Tagalog"],
@@ -101,7 +101,9 @@ var _model_select: OptionButton
 var _model_refresh_btn: Button
 var _model_field: LineEdit
 var _src_lang: OptionButton    # [3]
-var _lang_btn: MenuButton      # [4]
+var _lang_box: VBoxContainer   # [4]
+var _lang_field: LineEdit
+var _auto_lang_check: CheckBox
 var _selected_langs: Array[String] = []
 var _workers_row: HBoxContainer  # [5]
 var _workers_spin: SpinBox
@@ -194,16 +196,32 @@ func _ready() -> void:
 	_src_lang.disabled = true
 	add_child(_src_lang)
 
-	_lang_btn = MenuButton.new()
-	_lang_btn.text = "🌍 Select Languages"
-	_lang_btn.custom_minimum_size = Vector2(320, 0)
-	_lang_btn.flat = false
-	var popup := _lang_btn.get_popup()
-	for i in LANGUAGES.size():
-		popup.add_check_item("%s — %s" % [LANGUAGES[i][0], LANGUAGES[i][1]], i)
-	popup.id_pressed.connect(_on_lang_toggled)
-	popup.hide_on_checkable_item_selection = false
-	add_child(_lang_btn)
+	# Target languages: typed as comma-separated codes (e.g. "bg, da, tr").
+	# Kept inside a single VBox so the GraphNode child indices (and therefore
+	# the set_slot() calls below) stay valid.
+	_lang_box = VBoxContainer.new()
+	_lang_box.custom_minimum_size = Vector2(320, 0)
+	_lang_box.add_theme_constant_override("separation", 2)
+
+	var lang_lbl := Label.new()
+	lang_lbl.text = "🌍 Target languages (comma separated)"
+	lang_lbl.add_theme_font_size_override("font_size", 11)
+	lang_lbl.add_theme_color_override("font_color", Color(0.6, 0.7, 0.85))
+	_lang_box.add_child(lang_lbl)
+
+	_lang_field = LineEdit.new()
+	_lang_field.placeholder_text = "bg, da, tr  (Godot locale codes)"
+	_lang_field.tooltip_text = _lang_codes_hint()
+	_lang_field.text_changed.connect(_on_lang_field_changed)
+	_lang_box.add_child(_lang_field)
+
+	_auto_lang_check = CheckBox.new()
+	_auto_lang_check.text = "Use languages from file (CSV columns)"
+	_auto_lang_check.tooltip_text = "Translate into every language column already present in the CSV (except the source column).\nOnly works for CSV files."
+	_auto_lang_check.toggled.connect(_on_auto_lang_toggled)
+	_lang_box.add_child(_auto_lang_check)
+
+	add_child(_lang_box)
 
 	# ── Concurrency picker (parallel HTTP requests within one file) ─────
 	_workers_row = HBoxContainer.new()
@@ -440,7 +458,8 @@ func save_state() -> Dictionary:
 		"api":         api_value,
 		"model":       _model_field.text,
 		"source_lang": src_lang,
-		"target_langs": ",".join(PackedStringArray(_selected_langs)),
+		"target_langs": _lang_field.text if _lang_field != null else "",
+		"auto_langs":  _auto_lang_check.button_pressed if _auto_lang_check != null else false,
 		"workers":     int(_workers_spin.value) if _workers_spin != null else 4,
 	}
 
@@ -461,11 +480,18 @@ func load_state(data: Dictionary) -> void:
 	else:
 		_api_field.text = saved_api
 	_model_field.text = str(data.get("model", ""))
-	# Restore target languages (support both old "target_lang" and new "target_langs")
+	# Restore target languages (support both old "target_lang" and new "target_langs").
+	# Old workflows stored a comma-joined code list; that maps cleanly onto the
+	# new free-text field.
 	var tl := str(data.get("target_langs", data.get("target_lang", "")))
-	if not tl.is_empty():
-		for code in tl.split(","):
-			_select_lang_by_code(code.strip_edges())
+	if _lang_field != null:
+		_lang_field.text = tl
+	var auto_on := bool(data.get("auto_langs", false))
+	if _auto_lang_check != null:
+		_auto_lang_check.button_pressed = auto_on
+		_on_auto_lang_toggled(auto_on)
+	else:
+		_selected_langs = _parse_lang_field()
 	# Source lang only applies once a file is connected; remember for later
 	set_meta("pending_source_lang", str(data.get("source_lang", "")))
 	if _workers_spin != null and data.has("workers"):
@@ -491,8 +517,14 @@ func run() -> String:
 		return "no file connected"
 	if _model_field.text.strip_edges().is_empty():
 		return "model name is empty"
+	if _auto_lang_check != null and _auto_lang_check.button_pressed \
+			and _input_file.get_extension().to_lower() != "csv":
+		return "'Use languages from file' only works for CSV files"
+	_selected_langs = _resolve_target_langs()
 	if _selected_langs.is_empty():
-		return "no target language selected"
+		if _auto_lang_check != null and _auto_lang_check.button_pressed:
+			return "no language columns found in the CSV to translate into"
+		return "no target language entered"
 	if _provider.selected == 1 and _api_field.text.strip_edges().is_empty():
 		return "OpenRouter API key is empty"
 	if _input_file.get_extension().to_lower() == "csv" and not _src_lang_ready:
@@ -693,34 +725,63 @@ func _last_json_dict(raw: Array) -> Dictionary:
 	return {}
 
 
-func _on_lang_toggled(id: int) -> void:
-	var popup := _lang_btn.get_popup()
-	var idx := popup.get_item_index(id)
-	popup.toggle_item_checked(idx)
-	_rebuild_selected_langs()
+func _on_lang_field_changed(_text: String) -> void:
+	# Recompute the working list as the user types so run() has it ready.
+	if _auto_lang_check == null or not _auto_lang_check.button_pressed:
+		_selected_langs = _parse_lang_field()
 
 
-func _rebuild_selected_langs() -> void:
-	_selected_langs.clear()
-	var popup := _lang_btn.get_popup()
-	for i in popup.item_count:
-		if popup.is_item_checked(i):
-			_selected_langs.append(LANGUAGES[i][0])
-	if _selected_langs.is_empty():
-		_lang_btn.text = "🌍 Select Languages"
+func _on_auto_lang_toggled(pressed: bool) -> void:
+	# When auto is on the typed field is irrelevant — grey it out and pull the
+	# targets straight from the connected file's columns.
+	_lang_field.editable = not pressed
+	if pressed:
+		_selected_langs = _auto_langs_from_file()
 	else:
-		_lang_btn.text = "🌍 " + ", ".join(PackedStringArray(_selected_langs))
+		_selected_langs = _parse_lang_field()
 
 
-func _select_lang_by_code(code: String) -> void:
-	var popup := _lang_btn.get_popup()
-	for i in LANGUAGES.size():
-		if LANGUAGES[i][0] == code:
-			var idx := popup.get_item_index(i)
-			if not popup.is_item_checked(idx):
-				popup.toggle_item_checked(idx)
-			_rebuild_selected_langs()
-			return
+# Parse the comma-separated language field into a clean, de-duplicated list.
+func _parse_lang_field() -> Array[String]:
+	var out: Array[String] = []
+	if _lang_field == null:
+		return out
+	for raw in _lang_field.text.split(","):
+		var code := raw.strip_edges()
+		if not code.is_empty() and not out.has(code):
+			out.append(code)
+	return out
+
+
+# Target languages = every CSV language column except the chosen source one.
+# Only meaningful for CSV (PO files carry a single target).
+func _auto_langs_from_file() -> Array[String]:
+	var out: Array[String] = []
+	if _input_file.is_empty() or _input_file.get_extension().to_lower() != "csv":
+		return out
+	var src := ""
+	if _src_lang_ready and _src_lang.item_count > 0:
+		src = _src_lang.get_item_text(_src_lang.selected)
+	for col in _read_csv_languages(_input_file):
+		var code := col.strip_edges()
+		if not code.is_empty() and code != src and not out.has(code):
+			out.append(code)
+	return out
+
+
+# Resolve the languages to translate into right before a run starts.
+func _resolve_target_langs() -> Array[String]:
+	if _auto_lang_check != null and _auto_lang_check.button_pressed:
+		return _auto_langs_from_file()
+	return _parse_lang_field()
+
+
+# Tooltip listing the known Godot locale codes as a reference for the field.
+func _lang_codes_hint() -> String:
+	var parts := PackedStringArray()
+	for entry in LANGUAGES:
+		parts.append("%s — %s" % [entry[0], entry[1]])
+	return "Type codes separated by commas, e.g. bg, da, tr\n\nKnown codes:\n" + "\n".join(parts)
 
 
 # ── Background work ───────────────────────────────────────────────────────────

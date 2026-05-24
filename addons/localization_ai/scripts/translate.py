@@ -68,7 +68,7 @@ _LANG_NAMES = {
     "af": "Afrikaans", "sq": "Albanian", "am": "Amharic", "ar": "Arabic",
     "hy": "Armenian", "az": "Azerbaijani", "eu": "Basque", "be": "Belarusian",
     "bn": "Bengali", "bs": "Bosnian", "bg": "Bulgarian", "my": "Burmese",
-    "ca": "Catalan", "zh-CN": "Simplified Chinese", "zh-TW": "Traditional Chinese",
+    "ca": "Catalan", "zh_CN": "Simplified Chinese", "zh_TW": "Traditional Chinese",
     "hr": "Croatian", "cs": "Czech", "da": "Danish", "nl": "Dutch",
     "en": "English", "et": "Estonian", "fi": "Finnish", "fr": "French",
     "gl": "Galician", "ka": "Georgian", "de": "German", "el": "Greek",
@@ -79,9 +79,9 @@ _LANG_NAMES = {
     "lt": "Lithuanian", "mk": "Macedonian", "ms": "Malay", "ml": "Malayalam",
     "mt": "Maltese", "mr": "Marathi", "mn": "Mongolian", "ne": "Nepali",
     "no": "Norwegian", "fa": "Persian", "pl": "Polish", "pt": "Portuguese",
-    "pt-BR": "Brazilian Portuguese", "pa": "Punjabi", "ro": "Romanian",
+    "pt_BR": "Brazilian Portuguese", "pa": "Punjabi", "ro": "Romanian",
     "ru": "Russian", "sr": "Serbian", "si": "Sinhala", "sk": "Slovak",
-    "sl": "Slovenian", "es": "Spanish", "es-419": "Latin American Spanish",
+    "sl": "Slovenian", "es": "Spanish", "es_419": "Latin American Spanish",
     "sw": "Swahili", "sv": "Swedish", "tl": "Tagalog", "ta": "Tamil",
     "te": "Telugu", "th": "Thai", "tr": "Turkish", "uk": "Ukrainian",
     "ur": "Urdu", "uz": "Uzbek", "vi": "Vietnamese", "cy": "Welsh",
@@ -89,7 +89,14 @@ _LANG_NAMES = {
 
 
 def _lang_label(code: str) -> str:
-    return _LANG_NAMES.get(code, _LANG_NAMES.get(code.split("-")[0], code))
+    # Accept any separator style the user typed (Godot uses "_", many tools use
+    # "-") and fall back to the bare language root, then the raw code itself.
+    c = code.strip()
+    for key in (c, c.replace("-", "_"), c.replace("_", "-")):
+        if key in _LANG_NAMES:
+            return _LANG_NAMES[key]
+    root = c.replace("_", "-").split("-")[0]
+    return _LANG_NAMES.get(root, c)
 
 
 def translate_text(text: str, target_lang: str, provider: str,
