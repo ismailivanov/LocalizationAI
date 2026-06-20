@@ -16,6 +16,7 @@ const PromptScript          = preload("res://addons/localization_ai/ui/elements/
 @onready var _clear_btn:  Button     = $Tabs/Graph/OutputHeader/ClearBtn
 @onready var _parallel_spin:     SpinBox = $Tabs/Graph/Toolbar/ParallelSpin
 @onready var _eta_lbl:           Label   = $Tabs/Graph/Toolbar/EtaLbl
+@onready var _progress_bar:      ProgressBar = $Tabs/Graph/Toolbar/ProgressBar
 @onready var _save_btn:          Button = $Tabs/Graph/Toolbar/SaveBtn
 @onready var _load_btn:          Button = $Tabs/Graph/Toolbar/LoadBtn
 @onready var _clear_graph_btn:   Button = $Tabs/Graph/Toolbar/ClearGraphBtn
@@ -46,6 +47,8 @@ var _eta_baseline_done: int = 0
 # Per-translate-node progress snapshots:  name → {"current": int, "total": int}
 var _node_progress: Dictionary = {}
 var _eta_timer: Timer
+var _log_filter: OptionButton
+var _log_entries: Array[Dictionary] = []
 
 
 func _ready() -> void:
@@ -61,13 +64,28 @@ func _ready() -> void:
 	_stop_btn.pressed.connect(_on_stop_all)
 	_pause_btn.disabled = true
 	_stop_btn.disabled = true
-	_clear_btn.pressed.connect(func() -> void: _log.clear())
+	_clear_btn.pressed.connect(_clear_log)
 
 	# Make the log selectable & copyable (Ctrl+C, right-click → Copy).
 	_log.selection_enabled = true
 	_log.context_menu_enabled = true
 	_log.focus_mode = Control.FOCUS_CLICK
 	_log.shortcut_keys_enabled = true
+	_graph.right_disconnects = true
+	# Needed so the graph can receive Ctrl+Z / Ctrl+Y key events via gui_input
+	# once the user has clicked into the canvas.
+	_graph.focus_mode = Control.FOCUS_CLICK
+
+	var filter_label := Label.new()
+	filter_label.text = "Language:"
+	_clear_btn.get_parent().add_child(filter_label)
+	_clear_btn.get_parent().move_child(filter_label, 1)
+	_log_filter = OptionButton.new()
+	_log_filter.add_item("All languages")
+	_log_filter.set_item_metadata(0, "")
+	_log_filter.item_selected.connect(func(_index: int) -> void: _rebuild_log())
+	_clear_btn.get_parent().add_child(_log_filter)
+	_clear_btn.get_parent().move_child(_log_filter, 2)
 
 	# Add a "Copy Log" button next to "Clear Log".
 	var copy_btn := Button.new()
@@ -84,6 +102,7 @@ func _ready() -> void:
 	_graph.connection_request.connect(_on_connection_request)
 	_graph.disconnection_request.connect(_on_disconnection_request)
 	_graph.delete_nodes_request.connect(_on_delete_nodes_request)
+	_graph.begin_node_move.connect(_push_undo)
 	_graph.gui_input.connect(_on_graph_gui_input)
 
 	_context_menu = PopupMenu.new()
@@ -105,7 +124,8 @@ func _ready() -> void:
 	_setup_status_border()
 
 	_log_line("[color=gray]=== Localization AI ready ===[/color]")
-	_log_line("[color=gray]Right-click the graph to add nodes.[/color]")
+	_log_line("[color=gray]Right-click the graph to add nodes — right-click a connection to remove it.[/color]")
+	_log_line("[color=gray]Ctrl+Z to undo, Ctrl+Y (or Ctrl+Shift+Z) to redo.[/color]")
 	_report_orphan_partials()
 	# Show the workflow picker on first open (when the graph is empty). Loading
 	# a workflow or pressing "Start blank" dismisses it.
@@ -153,8 +173,11 @@ func _on_stop_all() -> void:
 	if dropped > 0:
 		_log_line("[color=red]⏹  Stop — discarded %d queued file(s)[/color]" % dropped)
 	_log_line("[color=red]⏹  Stop requested for all translations[/color]")
+	_eta_timer.stop()
+	_eta_lbl.text = "  ETA: stopped"
 	_pause_btn.disabled = true
 	_stop_btn.disabled = true
+	remove_theme_stylebox_override("panel")
 
 
 func _update_toolbar_buttons() -> void:
@@ -348,11 +371,31 @@ func _toggle_bottom_panel() -> void:
 # ── Right-click handler ───────────────────────────────────────────────────────
 
 func _on_graph_gui_input(event: InputEvent) -> void:
+	# Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y → undo / redo graph edits.
+	if event is InputEventKey and event.pressed and not event.echo \
+			and event.ctrl_pressed:
+		if event.keycode == KEY_Z:
+			if event.shift_pressed:
+				_redo()
+			else:
+				_undo()
+			_graph.accept_event()
+			return
+		if event.keycode == KEY_Y:
+			_redo()
+			_graph.accept_event()
+			return
+
 	if event is InputEventMouseButton \
 			and event.button_index == MOUSE_BUTTON_RIGHT \
 			and event.pressed:
 		if _graph_locked:
 			_log_line("[color=gray]› Graph is locked while a translation is running. Pause or Stop first.[/color]")
+			return
+		# Right-click directly on a wire removes that connection instead of
+		# opening the add-node menu.
+		if _delete_connection_at(event.position):
+			_graph.accept_event()
 			return
 		_spawn_pos = event.position / _graph.zoom + _graph.scroll_offset
 		var screen_pos := Vector2i(_graph.get_screen_position() + event.position)
@@ -387,6 +430,7 @@ func _spawn_node(script: GDScript, pos: Vector2) -> void:
 		print("[LocalizationAI] ERROR: not a GraphNode, got ", node.get_class())
 		return
 
+	_push_undo()
 	_graph.add_child(node)
 	node.position_offset = pos
 	print("[LocalizationAI] Node added. Child count of GraphEdit: ", _graph.get_child_count())
@@ -405,6 +449,15 @@ func _connect_node_signals(node: Object) -> void:
 		)
 	if node.has_signal("progress_updated"):
 		node.progress_updated.connect(_on_progress.bind(String(node.name)))
+	if node.has_signal("source_changed"):
+		node.source_changed.connect(func(path: String) -> void:
+			for conn in _graph.get_connection_list():
+				if conn.from_node != node.name:
+					continue
+				var dst := _graph.get_node_or_null(NodePath(conn.to_node))
+				if dst and dst.has_method("set_input_file"):
+					dst.set_input_file(path)
+		)
 	if node.has_signal("translation_paused"):
 		node.translation_paused.connect(func() -> void:
 			_pause_btn.text = "▶  Resume"
@@ -432,6 +485,7 @@ func _on_connection_request(from_node: StringName, from_port: int,
 		to_node: StringName, to_port: int) -> void:
 	if _graph_locked:
 		return
+	_push_undo()
 	_graph.connect_node(from_node, from_port, to_node, to_port)
 
 	var src := _graph.get_node_or_null(NodePath(from_node))
@@ -453,22 +507,100 @@ func _on_disconnection_request(from_node: StringName, from_port: int,
 		to_node: StringName, to_port: int) -> void:
 	if _graph_locked:
 		return
+	_push_undo()
 	_graph.disconnect_node(from_node, from_port, to_node, to_port)
+	var dst := _graph.get_node_or_null(NodePath(to_node))
+	if to_port == 0 and dst and dst.has_method("set_input_file"):
+		dst.set_input_file("")
+	_log_line("[color=gray]› Connection removed  (Ctrl+Z to undo)[/color]")
 
 
 func _on_delete_nodes_request(nodes: Array[StringName]) -> void:
 	if _graph_locked:
 		_log_line("[color=gray]› Cannot delete nodes while a translation is running.[/color]")
 		return
+	_push_undo()
 	for node_name in nodes:
 		for conn in _graph.get_connection_list():
 			if conn.from_node == node_name or conn.to_node == node_name:
 				_graph.disconnect_node(conn.from_node, conn.from_port, conn.to_node, conn.to_port)
-		
+
 		var node = _graph.get_node_or_null(NodePath(node_name))
 		if node:
 			node.queue_free()
-	_log_line("[color=gray]› Deleted %d node(s)[/color]" % nodes.size())
+	_log_line("[color=gray]› Deleted %d node(s)  (Ctrl+Z to undo)[/color]" % nodes.size())
+
+
+# Delete a single connection the user right-clicked on. Returns true if a
+# connection was found near the point and removed.
+func _delete_connection_at(point: Vector2) -> bool:
+	var conn := _graph.get_closest_connection_at_point(point, 8.0)
+	if conn.is_empty():
+		return false
+	if _graph_locked:
+		_log_line("[color=gray]› Cannot remove connections while a translation is running.[/color]")
+		return true
+	_push_undo()
+	var to_node := StringName(conn.get("to_node", ""))
+	var to_port := int(conn.get("to_port", 0))
+	_graph.disconnect_node(StringName(conn.get("from_node", "")),
+			int(conn.get("from_port", 0)), to_node, to_port)
+	var dst := _graph.get_node_or_null(NodePath(to_node))
+	if to_port == 0 and dst and dst.has_method("set_input_file"):
+		dst.set_input_file("")
+	_log_line("[color=gray]› Connection removed  (Ctrl+Z to undo)[/color]")
+	return true
+
+
+# ── Undo / redo (Ctrl+Z / Ctrl+Y) ────────────────────────────────────────────
+
+# History is kept as full graph snapshots (the same dict _serialize_graph()
+# produces). _push_undo() is called *before* each structural edit; restoring a
+# snapshot sets _restoring_snapshot so the rebuild's own spawn/connect calls
+# don't pollute the history.
+const _UNDO_LIMIT := 50
+var _undo_stack: Array[Dictionary] = []
+var _redo_stack: Array[Dictionary] = []
+var _restoring_snapshot := false
+
+
+func _push_undo() -> void:
+	if _restoring_snapshot:
+		return
+	_undo_stack.append(_serialize_graph())
+	if _undo_stack.size() > _UNDO_LIMIT:
+		_undo_stack.pop_front()
+	_redo_stack.clear()
+
+
+func _undo() -> void:
+	if _graph_locked:
+		_log_line("[color=gray]› Cannot undo while a translation is running.[/color]")
+		return
+	if _undo_stack.is_empty():
+		_log_line("[color=gray]› Nothing to undo[/color]")
+		return
+	_redo_stack.append(_serialize_graph())
+	_apply_snapshot(_undo_stack.pop_back())
+	_log_line("[color=gray]↶ Undo[/color]")
+
+
+func _redo() -> void:
+	if _graph_locked:
+		_log_line("[color=gray]› Cannot redo while a translation is running.[/color]")
+		return
+	if _redo_stack.is_empty():
+		_log_line("[color=gray]› Nothing to redo[/color]")
+		return
+	_undo_stack.append(_serialize_graph())
+	_apply_snapshot(_redo_stack.pop_back())
+	_log_line("[color=gray]↷ Redo[/color]")
+
+
+func _apply_snapshot(snapshot: Dictionary) -> void:
+	_restoring_snapshot = true
+	_restore_graph(snapshot)
+	_restoring_snapshot = false
 
 
 # ── Welcome panel (first-open workflow picker) ───────────────────────────────
@@ -687,7 +819,9 @@ func _propagate_to_exports(translate_name: String, output_path: String) -> void:
 # ── Run pipeline ──────────────────────────────────────────────────────────────
 
 func _run_pipeline() -> void:
-	_log.clear()
+	_clear_log()
+	_reset_log_filter()
+	_progress_bar.value = 0
 	_log_line("[color=cyan]▶  Run started[/color]")
 	_run_btn.disabled = true
 	_pause_btn.disabled = false
@@ -757,6 +891,7 @@ func _pump_chains() -> void:
 		_run_active = false
 		_eta_timer.stop()
 		_eta_lbl.text = "  ETA: done"
+		_progress_bar.value = 100
 		_log_line("[color=green]✓ All chains complete[/color]")
 		_update_toolbar_buttons()
 		_run_btn.disabled = false
@@ -790,6 +925,23 @@ func _start_chain(chain: Array) -> void:
 		_pump_chains()
 		return
 
+	# Free this chain's scheduler slot exactly once. A normal finish emits
+	# translation_done; a Stop emits translation_stopped (and *also*
+	# translation_done only when a partial file was produced). Releasing on both
+	# — guarded against a double release — is what keeps _active_chains and
+	# _run_active honest, so the status border clears when a run is stopped even
+	# if no string was translated yet.
+	var finished := [false]
+	var stopped_cb: Callable
+	var release := func() -> void:
+		if finished[0]:
+			return
+		finished[0] = true
+		_active_chains -= 1
+		_pump_chains()
+	stopped_cb = func() -> void:
+		release.call()
+	tr.translation_stopped.connect(stopped_cb)
 	tr.translation_done.connect(
 		func(out: String) -> void:
 			for ex in exports:
@@ -797,8 +949,9 @@ func _start_chain(chain: Array) -> void:
 				var ex_err: String = ex.run()
 				if not ex_err.is_empty():
 					_log_line("[color=red]Export error: %s[/color]" % ex_err)
-			_active_chains -= 1
-			_pump_chains(),
+			release.call()
+			if tr.translation_stopped.is_connected(stopped_cb):
+				tr.translation_stopped.disconnect(stopped_cb),
 		CONNECT_ONE_SHOT
 	)
 
@@ -844,7 +997,8 @@ func _build_chains() -> Array:
 
 # ── Progress ─────────────────────────────────────────────────────────────────
 
-func _on_progress(current: int, total: int, source: String, translated: String, node_name: String = "") -> void:
+func _on_progress(current: int, total: int, source: String, translated: String,
+		language: String, node_name: String = "") -> void:
 	# Record per-node progress for the ETA aggregator.
 	if not node_name.is_empty():
 		_node_progress[node_name] = {"current": current, "total": total}
@@ -858,9 +1012,10 @@ func _on_progress(current: int, total: int, source: String, translated: String, 
 
 	if not translated.is_empty():
 		# Translation completed — log both source and translated lines.
-		_log_line("  · %d/%d%s" % [current, total, pct])
-		_log_line("[color=#aab4cc]    📝 %s[/color]" % source)
-		_log_line("[color=#5af094]    ✅ %s[/color]" % translated)
+		_ensure_log_language(language)
+		_log_line("  · [b][%s][/b] %d/%d%s" % [language, current, total, pct], language)
+		_log_line("[color=#aab4cc]    📝 %s[/color]" % source, language)
+		_log_line("[color=#5af094]    ✅ %s[/color]" % translated, language)
 
 
 # ── ETA ──────────────────────────────────────────────────────────────────────
@@ -881,6 +1036,7 @@ func _refresh_eta() -> void:
 	var agg := _aggregate_progress()
 	var done: int = agg["done"]
 	var total: int = agg["total"]
+	_progress_bar.value = 100.0 * done / total if total > 0 else 0.0
 	if total <= 0 or done <= 0:
 		_eta_lbl.text = "  ETA: warming up…"
 		return
@@ -955,7 +1111,9 @@ func _save_workflow_as() -> void:
 	_save_dialog.popup_centered(Vector2i(900, 600))
 
 
-func _do_save_workflow(path: String) -> void:
+# Snapshot the whole graph (nodes + connections) into a plain Dictionary. Used
+# both by workflow save-to-disk and by the in-memory undo/redo history.
+func _serialize_graph() -> Dictionary:
 	var nodes_data := []
 	for child in _graph.get_children():
 		if not child.has_method("save_state"):
@@ -979,12 +1137,15 @@ func _do_save_workflow(path: String) -> void:
 			"to_port":   int(conn.to_port),
 		})
 
-	var data := {
+	return {
 		"version":     1,
 		"nodes":       nodes_data,
 		"connections": connections,
 	}
 
+
+func _do_save_workflow(path: String) -> void:
+	var data := _serialize_graph()
 	var json_text := JSON.stringify(data, "\t")
 	var abs := ProjectSettings.globalize_path(path)
 	var file := FileAccess.open(abs, FileAccess.WRITE)
@@ -1026,6 +1187,18 @@ func _do_load_workflow(path: String) -> void:
 		return
 	var data: Dictionary = p.get_data()
 
+	_restore_graph(data)
+
+	_current_workflow_path = path
+	_update_workflow_label()
+	_log_line("[color=green]✓ Workflow loaded ← %s[/color]" % path)
+
+
+# Rebuild the graph from a snapshot produced by _serialize_graph(). Shared by
+# workflow load and undo/redo. The current workflow path/label is preserved so
+# an undo doesn't make the editor forget which file is open.
+func _restore_graph(data: Dictionary) -> void:
+	var saved_path := _current_workflow_path
 	_clear_graph()
 
 	# Map saved node names → newly spawned node names
@@ -1066,9 +1239,8 @@ func _do_load_workflow(path: String) -> void:
 			elif src_node.has_method("get_output_file") and dst_node.has_method("set_pending_input"):
 				dst_node.set_pending_input()
 
-	_current_workflow_path = path
+	_current_workflow_path = saved_path
 	_update_workflow_label()
-	_log_line("[color=green]✓ Workflow loaded ← %s[/color]" % path)
 
 
 func _spawn_typed(script: GDScript, pos: Vector2) -> GraphNode:
@@ -1093,9 +1265,45 @@ func _clear_graph() -> void:
 
 # ── Log ───────────────────────────────────────────────────────────────────────
 
-func _log_line(msg: String) -> void:
-	if _log:
+func _log_line(msg: String, language: String = "") -> void:
+	_log_entries.append({"text": msg, "language": language})
+	if _log and _log_entry_visible(language):
 		_log.append_text(msg + "\n")
+
+
+func _clear_log() -> void:
+	_log_entries.clear()
+	if _log:
+		_log.clear()
+
+
+func _reset_log_filter() -> void:
+	_log_filter.clear()
+	_log_filter.add_item("All languages")
+	_log_filter.set_item_metadata(0, "")
+	_log_filter.select(0)
+
+
+func _ensure_log_language(language: String) -> void:
+	if language.is_empty():
+		return
+	for i in _log_filter.item_count:
+		if str(_log_filter.get_item_metadata(i)) == language:
+			return
+	_log_filter.add_item(language)
+	_log_filter.set_item_metadata(_log_filter.item_count - 1, language)
+
+
+func _log_entry_visible(language: String) -> bool:
+	var selected := str(_log_filter.get_item_metadata(_log_filter.selected))
+	return selected.is_empty() or language.is_empty() or language == selected
+
+
+func _rebuild_log() -> void:
+	_log.clear()
+	for entry in _log_entries:
+		if _log_entry_visible(str(entry.get("language", ""))):
+			_log.append_text(str(entry.get("text", "")) + "\n")
 
 
 func _on_copy_log() -> void:

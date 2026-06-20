@@ -89,7 +89,7 @@ const LANGUAGES := [
 
 signal translation_done(output_path: String)
 signal log_message(text: String)
-signal progress_updated(current: int, total: int, source: String, translated: String)
+signal progress_updated(current: int, total: int, source: String, translated: String, language: String)
 signal translation_paused()
 signal translation_resumed()
 signal translation_stopped()
@@ -884,11 +884,13 @@ func _read_progress() -> void:
 	var total := int(d.get("total", 0))
 	var source := str(d.get("source", ""))
 	var translated := str(d.get("translated", ""))
+	var language := str(d.get("target_lang", ""))
 	var last_source := str(d.get("last_source", ""))
 	var last_translated := str(d.get("last_translated", ""))
+	var last_language := str(d.get("last_target_lang", ""))
 
 	if total > 0 and not _is_paused:
-		_status.text = "Translating %d/%d…" % [current, total]
+		_status.text = "Translating %d/%d (%d%%)…" % [current, total, int(100.0 * current / total)]
 	elif not _is_paused:
 		_status.text = "Translating…"
 
@@ -909,13 +911,13 @@ func _read_progress() -> void:
 		_last_progress_current = current
 		# Emit with the completed translation data
 		if not last_source.is_empty() and not last_translated.is_empty():
-			progress_updated.emit(current, total, last_source, last_translated)
+			progress_updated.emit(current, total, last_source, last_translated, last_language)
 		elif not translated.is_empty():
-			progress_updated.emit(current, total, source, translated)
+			progress_updated.emit(current, total, source, translated, language)
 	elif source != _last_progress_text:
 		_last_progress_text = source
 		# New source started (in-progress, no translation yet)
-		progress_updated.emit(current, total, source, "")
+		progress_updated.emit(current, total, source, "", language)
 
 
 func _cleanup_progress() -> void:

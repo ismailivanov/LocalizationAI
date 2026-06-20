@@ -44,6 +44,9 @@ const POPULAR := [
 	{"name": "qwen2.5-coder",   "params": "7B",    "size_gb": 4.7,  "vram_gb": 6.0,  "desc": "Code-tuned Qwen 2.5"},
 ]
 
+const OLLAMA_DOWNLOAD_PAGE := "https://ollama.com/download"
+const OLLAMA_DEFAULT_URL := "http://localhost:11434"
+
 var _url_input: LineEdit
 var _installed_list: ItemList
 var _model_select: OptionButton
@@ -57,6 +60,14 @@ var _progress_file: String = ""
 var _progress_timer: Timer
 var _current_download: String = ""
 
+# ── Ollama install / setup ───────────────────────────────────────────────────
+var _setup_status: Label
+var _setup_btn: Button
+var _setup_page_btn: Button
+var _ollama_http: HTTPRequest
+var _dl_poll: Timer
+var _download_target: String = ""
+
 
 func _ready() -> void:
 	add_theme_constant_override("margin_left", 12)
@@ -68,6 +79,8 @@ func _ready() -> void:
 	vbox.add_theme_constant_override("separation", 6)
 	add_child(vbox)
 
+	_build_ollama_setup(vbox)
+
 	# ── URL row ───────────────────────────────────────────────────────────────
 	var url_row := HBoxContainer.new()
 	var url_lbl := Label.new()
@@ -75,7 +88,7 @@ func _ready() -> void:
 	url_row.add_child(url_lbl)
 
 	_url_input = LineEdit.new()
-	_url_input.text = "http://localhost:11434"
+	_url_input.text = OLLAMA_DEFAULT_URL
 	_url_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	url_row.add_child(_url_input)
 
@@ -152,6 +165,7 @@ func _ready() -> void:
 	if _model_select.item_count > 0:
 		_on_model_selected(0)
 	_refresh_models()
+	_refresh_setup_status()
 
 
 # ── Refresh ───────────────────────────────────────────────────────────────────
@@ -299,6 +313,267 @@ func _on_download_done(exit_code: int, raw: Array, model: String) -> void:
 		var last := _last_json(raw)
 		var msg := str(last.get("message", "exit %d" % exit_code))
 		_status_label.text = "Download failed: " + msg
+
+
+# ── Ollama install / setup ────────────────────────────────────────────────────
+
+# A one-click row that downloads Ollama for the current OS (or starts it if it
+# is already present) and points the URL field at the local server. The plugin
+# talks to Ollama purely over its HTTP API, so all this needs to achieve is "a
+# reachable server at localhost:11434".
+func _build_ollama_setup(vbox: VBoxContainer) -> void:
+	var panel := PanelContainer.new()
+	vbox.add_child(panel)
+
+	var inner := VBoxContainer.new()
+	inner.add_theme_constant_override("separation", 4)
+	panel.add_child(inner)
+
+	var title := Label.new()
+	title.text = "🦙  Ollama"
+	title.add_theme_font_size_override("font_size", 14)
+	inner.add_child(title)
+
+	_setup_status = Label.new()
+	_setup_status.text = "Checking for Ollama…"
+	_setup_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_setup_status.add_theme_font_size_override("font_size", 11)
+	inner.add_child(_setup_status)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	inner.add_child(row)
+
+	_setup_btn = Button.new()
+	_setup_btn.text = "⬇  Install & Start Ollama"
+	_setup_btn.tooltip_text = "Download Ollama for this operating system, start the local server, and point the URL above at it."
+	_setup_btn.pressed.connect(_on_setup_pressed)
+	row.add_child(_setup_btn)
+
+	_setup_page_btn = Button.new()
+	_setup_page_btn.text = "🌐  Download page"
+	_setup_page_btn.tooltip_text = OLLAMA_DOWNLOAD_PAGE
+	_setup_page_btn.pressed.connect(func() -> void: OS.shell_open(OLLAMA_DOWNLOAD_PAGE))
+	row.add_child(_setup_page_btn)
+
+	_ollama_http = HTTPRequest.new()
+	_ollama_http.max_redirects = 10
+	_ollama_http.use_threads = true
+	_ollama_http.request_completed.connect(_on_ollama_downloaded)
+	add_child(_ollama_http)
+
+	_dl_poll = Timer.new()
+	_dl_poll.wait_time = 0.3
+	_dl_poll.timeout.connect(_poll_ollama_download)
+	add_child(_dl_poll)
+
+	vbox.add_child(HSeparator.new())
+
+
+func _refresh_setup_status() -> void:
+	if _setup_status == null:
+		return
+	if _ollama_installed():
+		_setup_status.add_theme_color_override("font_color", Color(0.4, 0.9, 0.55))
+		_setup_status.text = "Ollama is installed. Use the button to (re)start the local server if needed."
+		_setup_btn.text = "▶  Start Ollama server"
+	else:
+		_setup_status.add_theme_color_override("font_color", Color(1.0, 0.8, 0.4))
+		_setup_status.text = "Ollama not detected. Click below to download and set it up for %s." % OS.get_name()
+		_setup_btn.text = "⬇  Install & Start Ollama"
+
+
+func _on_setup_pressed() -> void:
+	# Already installed → no download needed, just make sure the server runs and
+	# the URL field points at it.
+	if _ollama_installed():
+		_ensure_serve_and_configure()
+		return
+
+	var os_name := OS.get_name()
+	if _ollama_download_url(os_name).is_empty():
+		_setup_status.text = "Automatic install isn't supported on %s — opening the download page." % os_name
+		OS.shell_open(OLLAMA_DOWNLOAD_PAGE)
+		return
+
+	var dlg := ConfirmationDialog.new()
+	dlg.title = "Install Ollama"
+	dlg.dialog_text = ("Download Ollama for %s and set it up?\n\n" \
+			+ "• Saved to %s\n" \
+			+ "• On Linux/macOS the local server is started automatically.\n" \
+			+ "• On Windows the official installer is launched — follow its steps.") \
+			% [os_name, _ollama_install_dir()]
+	dlg.confirmed.connect(_begin_ollama_install)
+	add_child(dlg)
+	dlg.popup_centered()
+
+
+func _begin_ollama_install() -> void:
+	var os_name := OS.get_name()
+	var url := _ollama_download_url(os_name)
+	if url.is_empty():
+		OS.shell_open(OLLAMA_DOWNLOAD_PAGE)
+		return
+
+	var dir := _ollama_install_dir()
+	DirAccess.make_dir_recursive_absolute(dir)
+	_download_target = dir.path_join(_ollama_download_filename(os_name))
+	if FileAccess.file_exists(_download_target):
+		DirAccess.remove_absolute(_download_target)
+
+	_setup_btn.disabled = true
+	_setup_page_btn.disabled = true
+	_progress_bar.value = 0
+	_setup_status.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
+	_setup_status.text = "Downloading Ollama for %s…" % os_name
+
+	_ollama_http.download_file = _download_target
+	var err := _ollama_http.request(url, ["User-Agent: LocalizationAI"])
+	if err != OK:
+		_setup_install_failed("Download failed to start (error %d)." % err)
+		return
+	_dl_poll.start()
+
+
+func _poll_ollama_download() -> void:
+	var total := _ollama_http.get_body_size()
+	var got := _ollama_http.get_downloaded_bytes()
+	if total > 0:
+		_progress_bar.value = 100.0 * got / total
+		_setup_status.text = "Downloading Ollama… %.1f / %.1f MB" % [
+			got / 1048576.0, total / 1048576.0
+		]
+	elif got > 0:
+		_setup_status.text = "Downloading Ollama… %.1f MB" % (got / 1048576.0)
+
+
+func _on_ollama_downloaded(result: int, code: int, _headers: PackedStringArray,
+		_body: PackedByteArray) -> void:
+	_dl_poll.stop()
+	_setup_btn.disabled = false
+	_setup_page_btn.disabled = false
+	if result != HTTPRequest.RESULT_SUCCESS:
+		_setup_install_failed("Network error (result %d). Try the download page." % result)
+		return
+	if code >= 400:
+		_setup_install_failed("Server returned HTTP %d. Try the download page." % code)
+		return
+	if not FileAccess.file_exists(_download_target):
+		_setup_install_failed("Downloaded file is missing.")
+		return
+
+	_progress_bar.value = 100
+	match OS.get_name():
+		"Linux":
+			# .tar.zst needs zstd; GNU tar shells out to it via --zstd.
+			if not _has_command("zstd"):
+				_setup_install_failed("Extraction needs the 'zstd' tool. Install it and retry "
+						+ "(Debian/Ubuntu: sudo apt install zstd · Fedora: sudo dnf install zstd "
+						+ "· Arch: sudo pacman -S zstd).")
+				return
+			_install_ollama_archive(["tar", "--zstd", "-xf", _download_target, "-C", _ollama_install_dir()])
+		"macOS":
+			_install_ollama_archive(["unzip", "-o", _download_target, "-d", _ollama_install_dir()])
+		"Windows":
+			# Launch the official installer GUI; it registers Ollama and starts
+			# the background server itself once the user finishes.
+			_setup_status.text = "Launching the Ollama installer — follow its steps, then click Refresh."
+			_url_input.text = OLLAMA_DEFAULT_URL
+			if OS.create_process(_download_target, PackedStringArray()) <= 0:
+				OS.shell_open(_download_target)
+		_:
+			OS.shell_open(OLLAMA_DOWNLOAD_PAGE)
+
+
+# Extract the downloaded archive (Linux .tgz via tar, macOS .zip via unzip) and
+# then bring the server up. Falls back to the download page if extraction tools
+# are unavailable.
+func _install_ollama_archive(extract_cmd: Array) -> void:
+	_setup_status.text = "Extracting Ollama…"
+	var tool := String(extract_cmd[0])
+	var tool_args := PackedStringArray()
+	for i in range(1, extract_cmd.size()):
+		tool_args.append(String(extract_cmd[i]))
+	var out: Array = []
+	var ec := OS.execute(tool, tool_args, out)
+	if ec != 0:
+		_setup_install_failed("Could not extract the archive (%s exit %d)." % [tool, ec])
+		return
+
+	# macOS ships the CLI inside Ollama.app — open it so it can register itself.
+	if OS.get_name() == "macOS":
+		var app := _ollama_install_dir().path_join("Ollama.app")
+		if DirAccess.dir_exists_absolute(app):
+			OS.create_process("open", PackedStringArray([app]))
+	_ensure_serve_and_configure()
+
+
+# Start `ollama serve` (no-op if it's already running / managed as a service),
+# point the URL field at the local server, then refresh the model list.
+func _ensure_serve_and_configure() -> void:
+	_url_input.text = OLLAMA_DEFAULT_URL
+	var cli := _ollama_cli()
+	if not cli.is_empty():
+		OS.create_process(cli, PackedStringArray(["serve"]))
+	_setup_status.add_theme_color_override("font_color", Color(0.75, 0.75, 0.75))
+	_setup_status.text = "Starting the Ollama server…"
+	# Give the server a moment to bind the port before we query it.
+	await get_tree().create_timer(2.5).timeout
+	_refresh_models()
+	_refresh_setup_status()
+
+
+func _setup_install_failed(msg: String) -> void:
+	_dl_poll.stop()
+	_setup_btn.disabled = false
+	_setup_page_btn.disabled = false
+	_setup_status.add_theme_color_override("font_color", Color(1.0, 0.5, 0.5))
+	_setup_status.text = msg
+
+
+# Absolute path where a self-contained Ollama is downloaded/extracted.
+func _ollama_install_dir() -> String:
+	return ProjectSettings.globalize_path("user://localization_ai/ollama")
+
+
+func _ollama_download_url(os_name: String) -> String:
+	var arch := "arm64" if OS.has_feature("arm64") else "amd64"
+	match os_name:
+		# Current Linux releases ship as zstd-compressed tarballs (the old .tgz
+		# redirect now 404s). Matches what ollama.com/install.sh fetches.
+		"Linux":   return "https://ollama.com/download/ollama-linux-%s.tar.zst" % arch
+		"Windows": return "https://ollama.com/download/OllamaSetup.exe"
+		"macOS":   return "https://ollama.com/download/Ollama-darwin.zip"
+	return ""
+
+
+func _ollama_download_filename(os_name: String) -> String:
+	match os_name:
+		"Windows": return "OllamaSetup.exe"
+		"macOS":   return "Ollama-darwin.zip"
+		_:         return "ollama.tar.zst"
+
+
+# Path to a usable ollama binary: the one we extracted under user:// if present,
+# otherwise whatever is on PATH.
+func _ollama_cli() -> String:
+	var dir := _ollama_install_dir()
+	if OS.get_name() == "Windows":
+		var exe := dir.path_join("ollama.exe")
+		return exe if FileAccess.file_exists(exe) else "ollama"
+	var bin := dir.path_join("bin/ollama")
+	return bin if FileAccess.file_exists(bin) else "ollama"
+
+
+func _ollama_installed() -> bool:
+	var out: Array = []
+	var ec := OS.execute(_ollama_cli(), PackedStringArray(["--version"]), out)
+	return ec == 0
+
+
+func _has_command(name: String) -> bool:
+	var out: Array = []
+	return OS.execute(name, PackedStringArray(["--version"]), out) == 0
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

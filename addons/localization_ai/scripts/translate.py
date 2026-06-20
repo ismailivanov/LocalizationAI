@@ -171,6 +171,7 @@ _PROGRESS_TOTAL: int = 0
 _PROGRESS_CURRENT: int = 0
 _LAST_DONE_SOURCE: str = ""
 _LAST_DONE_TRANSLATED: str = ""
+_LAST_DONE_TARGET_LANG: str = ""
 _CONTROL_FILE: str = ""
 # Guards _PROGRESS_*, _LAST_DONE_*, progress-file writes, and partial-file
 # writes when workers > 1.
@@ -256,35 +257,40 @@ def _check_memory() -> None:
 
 def _set_total(total: int) -> None:
     global _PROGRESS_TOTAL, _PROGRESS_CURRENT, _LAST_DONE_SOURCE, _LAST_DONE_TRANSLATED
+    global _LAST_DONE_TARGET_LANG
     _PROGRESS_TOTAL = total
     _PROGRESS_CURRENT = 0
     _LAST_DONE_SOURCE = ""
     _LAST_DONE_TRANSLATED = ""
-    _write_progress("", "")
+    _LAST_DONE_TARGET_LANG = ""
+    _write_progress("", "", "")
 
 
-def _progress_start(source: str) -> None:
+def _progress_start(source: str, target_lang: str) -> None:
     """Called BEFORE the API call — translated is empty (in-progress)."""
-    _write_progress(source, "")
+    _write_progress(source, "", target_lang)
 
 
-def _progress_done(source: str, translated: str) -> None:
+def _progress_done(source: str, translated: str, target_lang: str) -> None:
     """Called AFTER the API call — advances counter, records both."""
     global _PROGRESS_CURRENT, _LAST_DONE_SOURCE, _LAST_DONE_TRANSLATED
+    global _LAST_DONE_TARGET_LANG
     _PROGRESS_CURRENT += 1
     _LAST_DONE_SOURCE = source
     _LAST_DONE_TRANSLATED = translated
-    _write_progress(source, translated)
+    _LAST_DONE_TARGET_LANG = target_lang
+    _write_progress(source, translated, target_lang)
     print(json.dumps({
         "type":       "progress",
         "current":    _PROGRESS_CURRENT,
         "total":      _PROGRESS_TOTAL,
         "source":     source[:80],
         "translated": translated[:80],
+        "target_lang": target_lang,
     }), flush=True)
 
 
-def _write_progress(source: str, translated: str) -> None:
+def _write_progress(source: str, translated: str, target_lang: str) -> None:
     if not _PROGRESS_FILE:
         return
     try:
@@ -294,8 +300,10 @@ def _write_progress(source: str, translated: str) -> None:
                 "total":      _PROGRESS_TOTAL,
                 "source":     source[:200],
                 "translated": translated[:200],
+                "target_lang": target_lang,
                 "last_source":     _LAST_DONE_SOURCE[:200],
                 "last_translated": _LAST_DONE_TRANSLATED[:200],
+                "last_target_lang": _LAST_DONE_TARGET_LANG,
             }, f)
     except OSError:
         pass
@@ -382,11 +390,11 @@ def _run_translations(tasks: list, workers: int, provider: str, api_url: str,
     if workers == 1:
         for t in tasks:
             _check_control()
-            _progress_start(t["source"])
+            _progress_start(t["source"], t["target_lang"])
             tr = translate_text(t["source"], t["target_lang"], provider,
                                 api_url, api_key, model)
             on_done(t, tr)
-            _progress_done(t["source"], tr)
+            _progress_done(t["source"], tr, t["target_lang"])
         return
 
     pending = list(tasks)
@@ -424,7 +432,7 @@ def _run_translations(tasks: list, workers: int, provider: str, api_url: str,
                     continue
                 with _PROGRESS_LOCK:
                     on_done(t, tr)
-                    _progress_done(t["source"], tr)
+                    _progress_done(t["source"], tr, t["target_lang"])
 
             while pending and len(in_flight) < workers and stop_exc is None:
                 try:
