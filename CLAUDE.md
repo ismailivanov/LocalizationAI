@@ -23,7 +23,16 @@ python3 addons/localization_ai/scripts/manage_models.py \
     --action list|pull|delete --model <name> [--api-url ...]
 ```
 
-There is no test suite, build step, or linter configured. Open `project.godot` in Godot to exercise the UI.
+There is no build step or linter configured. The one test file is stdlib-only
+and covers the backend's failure paths — run it after touching `translate.py`:
+
+```sh
+python3 tests/test_translate_progress.py
+```
+
+GDScript has no test runner; syntax-check edits with
+`godot --headless --check-only --script <file.gd>` and open `project.godot` to
+exercise the UI.
 
 ## Architecture
 
@@ -31,7 +40,7 @@ There is no test suite, build step, or linter configured. Open `project.godot` i
 
 The Godot side (GDScript, all `@tool`) drives a graph UI in an editor main-screen plugin. To do real work it shells out to Python via `OS.execute(_python(), args)` on a background `Thread`. The two processes communicate through three temp files in `user://` (one set per active translate node, suffixed with `Time.get_ticks_msec()`):
 
-- **progress file** — Python writes `{current, total, source, translated, last_source, last_translated}` after each string; Godot polls it every 0.5 s via `_progress_timer` in `translate_node.gd`.
+- **progress file** — Python writes `{current, total, source, translated, last_source, last_translated}` after each string; Godot polls it every 0.5 s via `_progress_timer` in `translate_node.gd`. The *partial output* file is a different thing and is throttled to one write per 5 s (`_due_for_partial()`) — it is rendered whole each time, and on a 17 MB CSV writing it per string produced tens of GB of churn and tripped the memory guard.
 - **control file** — Godot writes `{"command": "run"|"pause"|"stop"}`; Python's `_check_control()` reads it between strings, sleeping in a loop on `pause`, raising `StopTranslation` on `stop`.
 - **prompts file** — Godot serializes `{scope: [text, ...]}` (scope = `"global"` or an ISO code) for Python to splice into the system prompt.
 
@@ -57,13 +66,54 @@ Touch all of these in `main.gd`:
 
 The node script itself must extend `GraphNode`, set `title` and slots in `_init()` / `_ready()`, and implement `save_state()` / `load_state()` for workflow persistence. If it does work, expose `run()` returning `""` on success or an error string. To participate in port-time file propagation, implement `get_selected_file()` / `get_output_file()` / `set_input_file()` / `set_pending_input()` — `_on_connection_request()` reads them when an edge is drawn.
 
+### Failure handling
+
+Three tiers, all in `translate.py`. Getting these confused is how a five-minute
+provider hiccup used to cost an entire run:
+
+1. **Retryable** — capacity, 429, 5xx, timeouts. `_is_retryable()` reads the
+   status only from the `HTTP <code>:` prefix `_chat()` produces; matching bare
+   codes anywhere in the body used to hit user ids and token counts. Backoff is
+   `_RETRY_DELAYS` with jitter, slept via `_sleep_interruptible()` so Pause and
+   Stop still respond mid-wait.
+2. **Skippable** — a string that exhausts its retries, or comes back as a
+   passthrough (`_is_passthrough()`: byte-identical to a source of 6+ words).
+   `_skip()` records it and the run continues; the cell stays blank, and since
+   both writers only fill empty cells, re-running the file retries exactly the
+   failures. Never count these as translated — `translate_csv()` returns
+   `len(tasks) - len(_SKIPPED)`.
+3. **Fatal** — `_MAX_FAILURE_STREAK` (25) consecutive failures means the backend
+   is down or the key/model is wrong, not that it is flaky.
+
+`StopTranslation` must always propagate through all three; it is a stop, not a
+failure.
+
+### Not re-ingesting our own output
+
+Every file the plugin writes is named `<stem>_progress.<ext>` or
+`<stem>_translated.<ext>`, and those names feed straight back in when a run is
+resumed. Two places have to strip them and one has to refuse them outright:
+
+- `export_node.gd` — `_strip_generated_suffixes()` loops (including ISO
+  timestamps from `backup/`), used by **both** `run()` and
+  `_snapshot_project_name()`. A single `trim_suffix()` pass lets project names
+  compound into a new folder tree per run.
+- `directory_source_node.gd` — `_collect_files()` skips those stems entirely.
+  Otherwise a source pointed at a folder that also receives exports treats last
+  run's partial as this run's input.
+
+`progress/` and `backup/` get a `.gdignore` (`_mark_ignored()`); the export
+destination usually lives inside `res://`, and Godot will otherwise import every
+intermediate CSV into a full set of `.translation` resources. `done/` stays
+importable — that one is the deliverable.
+
 ### Translation prompts
 
 `translate.py`'s system prompt is hardcoded for game localization (placeholder preservation, capitalization style, no chatty prefixes). `_clean_translation()` strips common LLM artifacts (`<<<TEXT>>>` echoes, `"Translation:"` prefixes, surrounding quotes the source didn't have). Custom prompts from prompt nodes are appended as `Additional Instructions:` — `global` always, then `<target_lang>`-scoped if present.
 
 ### Memory safety
 
-`--min-free-mb` (default 800) makes `translate.py` abort cleanly when `/proc/meminfo` / `GlobalMemoryStatusEx` / `vm_stat` reports low available RAM. This is non-cosmetic: large local models can swap and freeze the desktop. The pre-flight check in `main()` aborts before model load; `_check_memory()` is called from `_check_control()` between every string.
+`--min-free-mb` (default 800) makes `translate.py` abort cleanly when `/proc/meminfo` / `GlobalMemoryStatusEx` / `vm_stat` reports low available RAM. This is non-cosmetic: large local models can swap and freeze the desktop. The pre-flight check in `main()` aborts before model load; `_check_memory()` is called from `_check_control()` between every string — and from *inside* its pause loop, alongside `_check_parent_alive()`, so a run paused when the editor closes doesn't spin forever as an orphan.
 
 ### Workflows
 
