@@ -176,8 +176,66 @@ def test_retryable_classification():
                 "HTTP 503: upstream overloaded"):
         assert m._is_retryable(msg), msg
     for msg in ("HTTP 401: invalid api key", "HTTP 404: no such model",
-                "Unsupported format: .txt"):
+                "Unsupported format: .txt",
+                # Digits in the body must not read as a status code.
+                'HTTP 404: {"message":"Grok 4.1 Fast is deprecated","code":404}',
+                "HTTP 401: invalid key, user_id: user_500xKq",
+                "HTTP 400: max_tokens 4290 exceeds limit"):
         assert not m._is_retryable(msg), msg
+
+
+def test_passthrough_is_caught():
+    """A model echoing the source must not be shipped as a translation."""
+    m = _load()
+    m._RETRY_DELAYS = (0, 0)
+    m._sleep_interruptible = lambda s: None
+
+    long_src = "this is a long line the model refuses to actually translate"
+    short_src = "Diaz"          # a name — identical output is correct here
+    calls = []
+
+    def echoes(messages, *a, **k):
+        calls.append(1)
+        body = messages[-1]["content"]
+        return long_src if long_src in body else short_src
+
+    m.translate_text.__globals__["_chat"] = echoes
+
+    # Short/untranslatable strings pass through untouched, as intended.
+    assert m.translate_text(short_src, "tr", "openrouter", "", "k", "m") == short_src
+
+    # A long line coming back verbatim is retried, then reported as a failure.
+    calls.clear()
+    try:
+        m.translate_text(long_src, "tr", "openrouter", "", "k", "m")
+        raise AssertionError("expected a PassthroughError")
+    except m.PassthroughError as exc:
+        msg = str(exc)
+    assert "tr" in msg
+    assert len(calls) == 2, calls      # one retry before giving up
+    assert not m._is_retryable(msg)    # never worth a 90 s backoff
+
+
+def test_skipped_not_counted_as_done():
+    """The finished count must exclude strings that were never translated."""
+    m = _load()
+    m._RETRY_DELAYS = (0, 0)
+    doomed = "hello 3\n"
+
+    def one_never_works(messages, *a, **k):
+        if doomed in messages[-1]["content"]:
+            raise RuntimeError("API error: at capacity")
+        return "merhaba"
+
+    m.translate_text.__globals__["_chat"] = one_never_works
+
+    with tempfile.TemporaryDirectory() as tmp:
+        src, out = os.path.join(tmp, "in.csv"), os.path.join(tmp, "out.csv")
+        _make_csv(src, 10)
+        count = _silence(m.translate_csv, src, out, os.path.join(tmp, "p.csv"),
+                         ["tr"], "openrouter", "", "k", "model", "en", 1)
+        assert count == 9, count
+        assert len(m._SKIPPED) == 1
 
 
 def test_throttle_window():

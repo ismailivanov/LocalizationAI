@@ -148,8 +148,8 @@ def translate_text(text: str, target_lang: str, provider: str,
     # but can persist for minutes — back off instead of giving up on try two.
     for attempt in range(len(_RETRY_DELAYS) + 1):
         try:
-            result = _chat(messages, provider, api_url, api_key, model)
-            break
+            cleaned = _clean_translation(
+                _chat(messages, provider, api_url, api_key, model), text)
         except RuntimeError as exc:
             if attempt >= len(_RETRY_DELAYS) or not _is_retryable(str(exc)):
                 raise
@@ -158,7 +158,38 @@ def translate_text(text: str, target_lang: str, provider: str,
             # march them back in lockstep to hit it again together.
             delay = _RETRY_DELAYS[attempt]
             _sleep_interruptible(delay * (0.5 + random.random()))
-    return _clean_translation(result, text)
+            continue
+
+        if not _is_passthrough(cleaned, text):
+            return cleaned
+        # The model echoed the source instead of translating it. Measured at
+        # 0.37% of long lines on a real run — silently shipping those means
+        # English text in the released game. One quick retry usually fixes it.
+        if attempt >= _PASSTHROUGH_RETRIES:
+            raise PassthroughError(target_lang)
+        _sleep_interruptible(1.0)
+    return cleaned
+
+
+class PassthroughError(RuntimeError):
+    """The model returned the source text unchanged instead of translating."""
+    def __init__(self, target_lang: str):
+        super().__init__(
+            "model returned the source unchanged (no %s translation)" % target_lang
+        )
+
+
+# A short string can legitimately be identical across languages — names, "OK",
+# numbers, UI tokens — and the system prompt explicitly asks for that. Only
+# flag lines long enough that an identical result means the model no-opped.
+_PASSTHROUGH_MIN_WORDS = 6
+_PASSTHROUGH_RETRIES = 1
+
+
+def _is_passthrough(translated: str, source: str) -> bool:
+    if translated.strip() != source.strip():
+        return False
+    return len(source.split()) >= _PASSTHROUGH_MIN_WORDS
 
 
 # Roughly 2.5 minutes of patience per string before giving up on it.
@@ -166,13 +197,24 @@ _RETRY_DELAYS = (2, 5, 15, 40, 90)
 
 _RETRYABLE_MARKERS = (
     "at capacity", "high demand", "overloaded", "rate limit", "too many requests",
-    "timed out", "timeout", "temporarily", "try again",
-    "429", "500", "502", "503", "504", "connection error",
+    "timed out", "timeout", "temporarily", "try again", "connection error",
 )
+
+_RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 
 
 def _is_retryable(message: str) -> bool:
     m = message.lower()
+    # Status codes count only from the "HTTP <code>:" prefix _chat produces.
+    # Matching them anywhere in the body hit user ids and token counts — a dead
+    # 401 with "user_500…" in it read as retryable and burned 2.5 minutes of
+    # backoff per string before the run finally gave up.
+    head, _, _rest = m.partition(":")
+    if head.startswith("http "):
+        try:
+            return int(head[5:].strip()) in _RETRYABLE_STATUS
+        except ValueError:
+            pass
     return any(marker in m for marker in _RETRYABLE_MARKERS)
 
 
@@ -422,11 +464,16 @@ def _check_control() -> None:
     """Check the control file for pause/stop commands between translations.
     Also enforces the low-memory safety abort and detects parent death so we
     flush progress and exit if the editor that spawned us is gone."""
-    _check_memory()
-    _check_parent_alive()
     if not _CONTROL_FILE:
+        _check_memory()
+        _check_parent_alive()
         return
     while True:
+        # Inside the loop, not before it: a paused run used to check these once
+        # and then spin forever, so closing the editor mid-pause left an orphan
+        # python process running until the machine was rebooted.
+        _check_memory()
+        _check_parent_alive()
         try:
             with open(_CONTROL_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -786,7 +833,8 @@ def translate_csv(input_path: str, output_path: str, stopped_output: str,
         csv.writer(f).writerows(rows)
     # Final file written — the partial is now redundant.
     _remove_quiet(stopped_output)
-    return len(tasks)
+    # Skipped strings were never translated; counting them made "Done (N)" lie.
+    return len(tasks) - len(_SKIPPED)
 
 
 def _write_csv_atomic(path: str, rows: list) -> None:

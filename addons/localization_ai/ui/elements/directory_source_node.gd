@@ -214,6 +214,14 @@ func _collect_files(abs_dir: String, exts: Array, recursive: bool, out: Array[St
 				_collect_files(full, exts, true, out)
 		else:
 			var lower := entry.to_lower()
+			# Never re-ingest our own output. Pointing a Directory Source at a
+			# folder that also receives exports otherwise feeds each run's
+			# partial back in as a fresh source, and the names pile up:
+			# dialogues → dialogues_progress → dialogues_progress_progress.
+			var stem := lower.get_basename()
+			if stem.ends_with("_progress") or stem.ends_with("_translated"):
+				entry = dir.get_next()
+				continue
 			for ext in exts:
 				if lower.ends_with(ext):
 					out.append(ProjectSettings.localize_path(full))

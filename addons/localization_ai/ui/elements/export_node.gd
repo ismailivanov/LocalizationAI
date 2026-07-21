@@ -260,7 +260,9 @@ func run() -> String:
 
 	# Derive the project name: explicit override, else the input stem
 	# stripped of routing suffixes.
-	var project := stem.trim_suffix("_progress").trim_suffix("_translated")
+	# Same loop as _snapshot_project_name — a single trim pass here still let
+	# resumed runs compound the folder name into a brand-new project tree.
+	var project := _strip_generated_suffixes(stem)
 	var custom_name := _name_input.text.strip_edges()
 	if not custom_name.is_empty():
 		var c_ext := custom_name.get_extension()
@@ -281,6 +283,10 @@ func run() -> String:
 	if not DirAccess.dir_exists_absolute(dest_subdir):
 		if DirAccess.make_dir_recursive_absolute(dest_subdir) != OK:
 			return "cannot create export folder: " + dest_subdir
+	# Only the live partial and the rotating backups are shielded from Godot's
+	# importer — the finished file in done/ is meant to be imported.
+	if is_progress:
+		_mark_ignored(dest_subdir)
 
 	# Python may already have written straight into the export folder (live
 	# partial path). In that case src == dest and we must not copy-then-delete
