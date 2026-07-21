@@ -321,6 +321,27 @@ def _write_progress(source: str, translated: str, target_lang: str) -> None:
         pass
 
 
+_LAST_PARTIAL_WRITE = 0.0
+_PARTIAL_MIN_INTERVAL = 5.0
+
+
+def _due_for_partial() -> bool:
+    """Rate-limit the partial rewrite.
+
+    The partial is rendered whole and re-written after every completed string.
+    On a 17 MB / 5000-row CSV × 3 languages that is tens of GB of disk churn per
+    run, which starves the page cache and trips the low-memory abort. Every
+    exit path (stop, error, finish) flushes unconditionally, so the worst case
+    from throttling is losing the last few seconds of a hard crash.
+    """
+    global _LAST_PARTIAL_WRITE
+    now = time.monotonic()
+    if now - _LAST_PARTIAL_WRITE < _PARTIAL_MIN_INTERVAL:
+        return False
+    _LAST_PARTIAL_WRITE = now
+    return True
+
+
 def _check_parent_alive() -> None:
     """Raise StopTranslation if the parent process (Godot editor) is gone.
 
@@ -582,12 +603,13 @@ def translate_po(input_path: str, output_path: str, stopped_output: str,
         block = t["_block"]
         block["msgstr_lines"] = [f'msgstr "{_escape_po(tr)}"\n']
         block["translated"] = True
-        _write_text_atomic(stopped_output, _render())
+        if _due_for_partial():
+            _write_text_atomic(stopped_output, _render())
 
     try:
         _run_translations(tasks, workers, provider, api_url, api_key, model,
                           _on_done)
-    except StopTranslation:
+    except Exception:  # stop, low memory, or a hard failure — flush either way
         _write_text_atomic(stopped_output, _render())
         raise
 
@@ -662,12 +684,13 @@ def translate_csv(input_path: str, output_path: str, stopped_output: str,
 
     def _on_done(t: dict, tr: str) -> None:
         rows[t["_row"]][t["_col"]] = tr
-        _write_csv_atomic(stopped_output, rows)
+        if _due_for_partial():
+            _write_csv_atomic(stopped_output, rows)
 
     try:
         _run_translations(tasks, workers, provider, api_url, api_key, model,
                           _on_done)
-    except StopTranslation:
+    except Exception:  # stop, low memory, or a hard failure — flush either way
         _write_csv_atomic(stopped_output, rows)
         raise
 

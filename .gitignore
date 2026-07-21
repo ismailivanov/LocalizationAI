@@ -32,3 +32,6 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 *.pyo
+
+# Release archives built by `git archive` for GitHub releases
+LocalizationAI-v*.zip

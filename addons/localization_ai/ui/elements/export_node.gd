@@ -102,7 +102,21 @@ func prepare_partial_path(source_path: String, ext: String) -> String:
 	if not DirAccess.dir_exists_absolute(progress_dir):
 		if DirAccess.make_dir_recursive_absolute(progress_dir) != OK:
 			return ""
+	_mark_ignored(progress_dir)
 	return progress_dir.path_join("%s_progress.%s" % [project, ext])
+
+
+static func _mark_ignored(dir: String) -> void:
+	# Keep Godot's importer out of the intermediates. The export destination
+	# normally lives inside res://, and without this marker every partial and
+	# every backup CSV gets imported into a full set of .translation resources
+	# — tens of MB per run, plus junk entries in the project's translation list.
+	var marker := dir.path_join(".gdignore")
+	if FileAccess.file_exists(marker):
+		return
+	var f := FileAccess.open(marker, FileAccess.WRITE)
+	if f != null:
+		f.close()
 
 
 func save_snapshot(partial_src: String) -> void:
@@ -127,6 +141,8 @@ func save_snapshot(partial_src: String) -> void:
 			return
 	if not DirAccess.dir_exists_absolute(backup_dir):
 		DirAccess.make_dir_recursive_absolute(backup_dir)
+	_mark_ignored(progress_dir)
+	_mark_ignored(backup_dir)
 
 	# When Python is writing the live partial directly into snap_file (the
 	# common path now), partial_src == snap_file. We only need to rotate a
@@ -148,10 +164,24 @@ func _snapshot_project_name(partial_src: String) -> String:
 		var c_ext := custom_name.get_extension()
 		return custom_name.get_basename() if not c_ext.is_empty() else custom_name
 	if not _source_file.is_empty():
-		return _source_file.get_file().get_basename() \
-				.trim_suffix("_progress").trim_suffix("_translated")
-	return partial_src.get_file().get_basename() \
-			.trim_suffix("_progress").trim_suffix("_translated")
+		return _strip_generated_suffixes(_source_file.get_file().get_basename())
+	return _strip_generated_suffixes(partial_src.get_file().get_basename())
+
+
+static func _strip_generated_suffixes(stem: String) -> String:
+	# Resuming a run feeds one of our own outputs back in as the source. A
+	# single trim_suffix() pass wasn't enough, so the project name compounded:
+	#   dialogues → dialogues_2026-07-21T09-22-16 → …T09-22-16_36389
+	# and every variant grew its own progress/ + backup/ tree.
+	var re := RegEx.new()
+	re.compile("(_progress|_translated|_\\d{4}-\\d{2}-\\d{2}T[0-9\\-]+)$")
+	var s := stem
+	while true:
+		var m := re.search(s)
+		if m == null:
+			break
+		s = s.substr(0, m.get_start())
+	return s if not s.is_empty() else stem
 
 
 func _prune_backups(backup_dir: String, project: String, ext: String, keep: int) -> void:

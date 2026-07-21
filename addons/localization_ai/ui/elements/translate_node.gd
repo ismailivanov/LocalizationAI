@@ -561,6 +561,14 @@ func run() -> String:
 	else:
 		log_message.emit("[color=gray]› No custom prompts found[/color]")
 
+	# Resolve where the live partial goes HERE, on the main thread. This walks
+	# the graph and reads the Export node's destination LineEdit — doing that
+	# from the worker thread returned "" often enough that runs kept silently
+	# falling back to user:// instead of the folder the user picked.
+	_partial_path = _resolve_partial_path(
+			ProjectSettings.globalize_path(_input_file),
+			_input_file.get_extension())
+
 	_last_progress_current = -1
 	_last_progress_text = ""
 	_set_buttons_running(true)
@@ -797,13 +805,10 @@ func _run_translation() -> void:
 	# node's destination so the recovery file lives where the user expects.
 	# Fall back to user:// only if no export is reachable or its folder is
 	# unusable (e.g. removed).
-	var stopped_g := _resolve_partial_path(input_g, ext)
+	# Already resolved on the main thread by run() — see the note there.
+	var stopped_g := _partial_path
 	var out_dir := stopped_g.get_base_dir()
 	var out_g := out_dir.path_join("%s_translated.%s" % [src_stem, ext])
-	# Make the partial path reachable from the snapshot timer (which runs on
-	# the main thread; this assignment happens on the worker thread before
-	# Python is spawned, so it's set well before the timer fires).
-	_partial_path = stopped_g
 
 	var args: Array[String] = [
 		script,
@@ -1103,7 +1108,10 @@ func _resolve_partial_path(input_g: String, ext: String) -> String:
 	DirAccess.make_dir_recursive_absolute(tmp_dir)
 	var src_stem := input_g.get_file().get_basename() \
 			.trim_suffix("_progress").trim_suffix("_translated")
-	return tmp_dir.path_join("%s_%d_progress.%s" % [src_stem, Time.get_ticks_msec(), ext])
+	# One file per source, overwritten each run. The old name carried a
+	# Time.get_ticks_msec() stamp, so every stop/resume cycle left behind
+	# another multi-MB copy in user:// that nothing ever cleaned up.
+	return tmp_dir.path_join("%s_progress.%s" % [src_stem, ext])
 
 
 func _snapshot_to_exports() -> void:
