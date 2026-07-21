@@ -143,6 +143,11 @@ func _on_pause_all() -> void:
 			if child.has_method("is_paused") and not child.is_paused():
 				all_paused = false
 
+	if not any_running:
+		_log_line("[color=gray]Nothing is running[/color]")
+		_update_toolbar_buttons()
+		return
+
 	for child in _graph.get_children():
 		if not child.has_method("is_running") or not child.is_running():
 			continue
@@ -175,9 +180,9 @@ func _on_stop_all() -> void:
 	_log_line("[color=red]⏹  Stop requested for all translations[/color]")
 	_eta_timer.stop()
 	_eta_lbl.text = "  ETA: stopped"
-	_pause_btn.disabled = true
-	_stop_btn.disabled = true
-	remove_theme_stylebox_override("panel")
+	# Derive button state instead of hardcoding it — hardcoding left Run disabled
+	# and the graph locked with nothing running, so the user couldn't restart.
+	_update_toolbar_buttons()
 
 
 func _update_toolbar_buttons() -> void:
@@ -887,12 +892,16 @@ func _pump_chains() -> void:
 		_active_chains += 1
 		_start_chain(chain)
 
-	if _active_chains == 0 and _chains_queue.is_empty() and _run_active:
-		_run_active = false
-		_eta_timer.stop()
-		_eta_lbl.text = "  ETA: done"
-		_progress_bar.value = 100
-		_log_line("[color=green]✓ All chains complete[/color]")
+	if _active_chains == 0 and _chains_queue.is_empty():
+		# Refresh unconditionally: after a Stop, _run_active is already false when
+		# the last node finishes, and the old `and _run_active` guard skipped the
+		# refresh entirely — leaving Run disabled and the graph locked.
+		if _run_active:
+			_run_active = false
+			_eta_timer.stop()
+			_eta_lbl.text = "  ETA: done"
+			_progress_bar.value = 100
+			_log_line("[color=green]✓ All chains complete[/color]")
 		_update_toolbar_buttons()
 		_run_btn.disabled = false
 

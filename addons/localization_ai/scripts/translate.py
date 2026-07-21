@@ -58,7 +58,11 @@ def _chat(messages: list, provider: str, api_url: str, api_key: str, model: str)
     if "choices" not in data or not data["choices"]:
         raise RuntimeError(f"Unexpected API response: {raw[:300]}")
 
-    return data["choices"][0]["message"]["content"].strip()
+    # Reasoning models (grok, o-series, …) can return content=null and park the
+    # text in `reasoning` — .strip() on None used to kill the whole run.
+    msg = data["choices"][0].get("message") or {}
+    content = msg.get("content") or msg.get("reasoning") or ""
+    return content.strip()
 
 
 _PROMPTS: dict = {}
@@ -139,7 +143,15 @@ def translate_text(text: str, target_lang: str, provider: str,
         {"role": "system", "content": sys_content},
         {"role": "user", "content": user_content},
     ]
-    result = _chat(messages, provider, api_url, api_key, model)
+    # One retry: a transient 429/5xx on string 137 of 5157 shouldn't kill the run.
+    for attempt in range(2):
+        try:
+            result = _chat(messages, provider, api_url, api_key, model)
+            break
+        except RuntimeError:
+            if attempt == 1:
+                raise
+            time.sleep(2)
     return _clean_translation(result, text)
 
 
@@ -806,7 +818,14 @@ def main() -> None:
         sys.exit(0)
 
     except Exception as exc:  # noqa: BLE001
-        print(json.dumps({"type": "error", "message": str(exc)}), flush=True)
+        # Report the partial too — `_on_done` has been flushing it after every
+        # string, so an error at 136/5157 still has 136 translations on disk.
+        print(json.dumps({
+            "type": "error",
+            "message": str(exc),
+            "output": args.stopped_output or args.output,
+            "count": _PROGRESS_CURRENT,
+        }), flush=True)
         sys.exit(1)
 
 

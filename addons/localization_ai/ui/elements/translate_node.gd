@@ -981,6 +981,16 @@ func _on_done(exit_code: int, raw: Array, output_path: String) -> void:
 				var msg := "Error: " + str(d.get("message", ""))
 				_status.text = msg
 				log_message.emit("Translate: " + msg)
+				# Must signal, or main.gd never frees this chain's scheduler slot
+				# and the whole toolbar stays locked until the editor restarts.
+				var err_partial := str(d.get("output", ""))
+				if not err_partial.is_empty() and FileAccess.file_exists(err_partial):
+					_output_file = ProjectSettings.localize_path(err_partial)
+					log_message.emit("Translate: partial file → " + err_partial.get_file())
+					translation_stopped.emit()
+					translation_done.emit(_output_file)
+				else:
+					translation_stopped.emit()
 				return
 
 	if exit_code == 0:
@@ -991,6 +1001,7 @@ func _on_done(exit_code: int, raw: Array, output_path: String) -> void:
 	else:
 		_status.text = "Failed (exit %d)" % exit_code
 		log_message.emit("Translate: failed\n" + joined.left(200))
+		translation_stopped.emit()
 
 
 static func _python() -> String:
