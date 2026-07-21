@@ -52,7 +52,7 @@ def test_null_content():
 
 def test_retry_on_transient_error():
     m = _load()
-    m.translate_text.__globals__["time"].sleep = lambda s: None
+    m._RETRY_DELAYS = (0, 0)  # no real backoff in tests
     calls = []
 
     def flaky(messages, *a, **k):
@@ -66,43 +66,118 @@ def test_retry_on_transient_error():
     assert len(calls) == 2
 
 
+def _make_csv(path, n):
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["keys", "en", "tr"])
+        for i in range(n):
+            w.writerow(["k%d" % i, "hello %d" % i, ""])
+
+
+def _silence(fn, *a):
+    real_out, real_err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
+    try:
+        return fn(*a)
+    finally:
+        sys.stdout, sys.stderr = real_out, real_err
+
+
+def test_bad_strings_are_skipped_not_fatal():
+    """A handful of dead strings must not sink the whole run."""
+    m = _load()
+    m._RETRY_DELAYS = (0, 0)  # no real backoff in tests
+    # Two strings the backend never manages, however many times we retry.
+    doomed = ("hello 5\n", "hello 12\n")
+
+    def some_strings_never_work(messages, *a, **k):
+        body = messages[-1]["content"]
+        if any(d in body for d in doomed):
+            raise RuntimeError("API error: model is currently at capacity")
+        return "merhaba"
+
+    m.translate_text.__globals__["_chat"] = some_strings_never_work
+
+    with tempfile.TemporaryDirectory() as tmp:
+        src, out = os.path.join(tmp, "in.csv"), os.path.join(tmp, "out.csv")
+        _make_csv(src, 20)
+        _silence(m.translate_csv, src, out, os.path.join(tmp, "p.csv"), ["tr"],
+                 "openrouter", "", "k", "model", "en", 1)
+
+        rows = list(csv.reader(open(out, encoding="utf-8")))
+        translated = sum(1 for r in rows[1:] if r[2])
+        assert translated == 18, translated
+        assert len(m._SKIPPED) == 2
+        # Skipped cells stay blank so a re-run retries exactly those.
+        blank = [r[0] for r in rows[1:] if not r[2]]
+        assert blank == ["k5", "k12"], blank
+
+
+def test_dead_backend_aborts():
+    """If nothing gets through it's a dead backend, not flakiness — stop."""
+    m = _load()
+    m._RETRY_DELAYS = (0, 0)  # no real backoff in tests
+
+    def always_dies(messages, *a, **k):
+        raise RuntimeError("API error: model is currently at capacity")
+
+    m.translate_text.__globals__["_chat"] = always_dies
+
+    with tempfile.TemporaryDirectory() as tmp:
+        src, out = os.path.join(tmp, "in.csv"), os.path.join(tmp, "out.csv")
+        partial = os.path.join(tmp, "p.csv")
+        _make_csv(src, 200)
+        try:
+            _silence(m.translate_csv, src, out, partial, ["tr"], "openrouter",
+                     "", "k", "model", "en", 1)
+            raise AssertionError("expected the run to abort")
+        except RuntimeError as exc:
+            assert "in a row" in str(exc), exc
+        # Gave up well before chewing through all 200 strings.
+        assert len(m._SKIPPED) == m._MAX_FAILURE_STREAK
+        assert not os.path.exists(out), "no final output on an aborted run"
+
+
 def test_partial_survives_failure():
     """Writes are throttled, but every completed string must still be on disk."""
     m = _load()
-    m.translate_text.__globals__["time"].sleep = lambda s: None
+    m._RETRY_DELAYS = (0, 0)  # no real backoff in tests
     done = []
 
-    def dies_after_six(messages, *a, **k):
+    def dies_hard_after_six(messages, *a, **k):
         done.append(1)
         if len(done) > 6:
-            raise RuntimeError("boom")
+            raise ValueError("not retryable, not skippable")
         return "merhaba"
 
-    m.translate_text.__globals__["_chat"] = dies_after_six
+    m.translate_text.__globals__["_chat"] = dies_hard_after_six
 
     with tempfile.TemporaryDirectory() as tmp:
-        src = os.path.join(tmp, "in.csv")
-        out = os.path.join(tmp, "out.csv")
+        src, out = os.path.join(tmp, "in.csv"), os.path.join(tmp, "out.csv")
         partial = os.path.join(tmp, "partial.csv")
-        with open(src, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["keys", "en", "tr"])
-            for i in range(20):
-                w.writerow(["k%d" % i, "hello %d" % i, ""])
+        _make_csv(src, 200)
 
-        real_stdout, sys.stdout = sys.stdout, io.StringIO()
         try:
-            m.translate_csv(src, out, partial, ["tr"], "openrouter", "", "k",
-                            "model", "en", 1)
+            _silence(m.translate_csv, src, out, partial, ["tr"], "openrouter",
+                     "", "k", "model", "en", 1)
             raise AssertionError("expected the run to fail")
         except RuntimeError:
             pass
-        finally:
-            sys.stdout = real_stdout
 
         rows = list(csv.reader(open(partial, encoding="utf-8")))
         assert sum(1 for r in rows[1:] if r[2]) == 6
         assert not os.path.exists(out), "no final output on a failed run"
+
+
+def test_retryable_classification():
+    m = _load()
+    for msg in ("The model is currently at capacity due to high demand.",
+                "HTTP 429: rate limited", "Connection error: timed out",
+                "HTTP 503: upstream overloaded"):
+        assert m._is_retryable(msg), msg
+    for msg in ("HTTP 401: invalid api key", "HTTP 404: no such model",
+                "Unsupported format: .txt"):
+        assert not m._is_retryable(msg), msg
 
 
 def test_throttle_window():

@@ -957,6 +957,7 @@ func _on_done(exit_code: int, raw: Array, output_path: String) -> void:
 				var msg := "Done (%d strings)" % d.get("count", 0)
 				_status.text = msg
 				log_message.emit("Translate: " + msg)
+				_log_skipped(int(d.get("skipped", 0)))
 				translation_done.emit(_output_file)
 				return
 			"stopped":
@@ -976,6 +977,7 @@ func _on_done(exit_code: int, raw: Array, output_path: String) -> void:
 				_status.text = msg
 				log_message.emit("Translate: " + msg)
 				log_message.emit("Translate: partial file → " + partial_path.get_file())
+				_log_skipped(int(d.get("skipped", 0)))
 				translation_stopped.emit()
 				# Route the partial _progress file through any connected Export node
 				# so it lands in the export destination and can be resumed later.
@@ -986,6 +988,7 @@ func _on_done(exit_code: int, raw: Array, output_path: String) -> void:
 				var msg := "Error: " + str(d.get("message", ""))
 				_status.text = msg
 				log_message.emit("Translate: " + msg)
+				_log_skipped(int(d.get("skipped", 0)))
 				# Must signal, or main.gd never frees this chain's scheduler slot
 				# and the whole toolbar stays locked until the editor restarts.
 				var err_partial := str(d.get("output", ""))
@@ -1007,6 +1010,17 @@ func _on_done(exit_code: int, raw: Array, output_path: String) -> void:
 		_status.text = "Failed (exit %d)" % exit_code
 		log_message.emit("Translate: failed\n" + joined.left(200))
 		translation_stopped.emit()
+
+
+func _log_skipped(count: int) -> void:
+	if count <= 0:
+		return
+	# Skipped strings are left empty on purpose — re-running the same file
+	# retries exactly those, since the writers only fill blank cells.
+	log_message.emit(
+		("[color=yellow]Translate: %d string(s) skipped after repeated API errors — "
+		+ "run again to retry just those.[/color]") % count
+	)
 
 
 static func _python() -> String:

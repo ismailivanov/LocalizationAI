@@ -9,6 +9,7 @@ import argparse
 import csv
 import json
 import os
+import random
 import sys
 import threading
 import time
@@ -143,16 +144,47 @@ def translate_text(text: str, target_lang: str, provider: str,
         {"role": "system", "content": sys_content},
         {"role": "user", "content": user_content},
     ]
-    # One retry: a transient 429/5xx on string 137 of 5157 shouldn't kill the run.
-    for attempt in range(2):
+    # "The model is currently at capacity", 429s and 5xx all clear on their own,
+    # but can persist for minutes — back off instead of giving up on try two.
+    for attempt in range(len(_RETRY_DELAYS) + 1):
         try:
             result = _chat(messages, provider, api_url, api_key, model)
             break
-        except RuntimeError:
-            if attempt == 1:
+        except RuntimeError as exc:
+            if attempt >= len(_RETRY_DELAYS) or not _is_retryable(str(exc)):
                 raise
-            time.sleep(2)
+            # Jitter: with 10 parallel requests every worker hits the same
+            # capacity wall at the same moment, and a fixed schedule would
+            # march them back in lockstep to hit it again together.
+            delay = _RETRY_DELAYS[attempt]
+            _sleep_interruptible(delay * (0.5 + random.random()))
     return _clean_translation(result, text)
+
+
+# Roughly 2.5 minutes of patience per string before giving up on it.
+_RETRY_DELAYS = (2, 5, 15, 40, 90)
+
+_RETRYABLE_MARKERS = (
+    "at capacity", "high demand", "overloaded", "rate limit", "too many requests",
+    "timed out", "timeout", "temporarily", "try again",
+    "429", "500", "502", "503", "504", "connection error",
+)
+
+
+def _is_retryable(message: str) -> bool:
+    m = message.lower()
+    return any(marker in m for marker in _RETRYABLE_MARKERS)
+
+
+def _sleep_interruptible(seconds: float) -> None:
+    """Sleep, but stay responsive to Pause/Stop while backing off."""
+    deadline = time.monotonic() + seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        _check_control()
+        time.sleep(min(0.5, remaining))
 
 
 def _clean_translation(out: str, original: str) -> str:
@@ -191,6 +223,14 @@ _PROGRESS_LOCK = threading.Lock()
 _INITIAL_PPID: int = 0  # PID of the Godot editor that launched us; if this
                         # changes (Godot crashed/quit) we treat it as a stop so
                         # the progress file is written and the child exits.
+
+
+# Strings we gave up on after exhausting _RETRY_DELAYS. They stay empty in the
+# output so a later run picks them up again.
+_SKIPPED: list = []
+
+# How many failures in a row before we call the backend dead rather than flaky.
+_MAX_FAILURE_STREAK = 25
 
 
 class StopTranslation(Exception):
@@ -420,12 +460,53 @@ def _run_translations(tasks: list, workers: int, provider: str, api_url: str,
     if workers < 1:
         workers = 1
 
+    streak = [0]  # consecutive failures, boxed so _skip can mutate it
+
+    def _skip(t: dict, exc: BaseException) -> None:
+        """Record a string we gave up on and keep going.
+
+        Leaving the cell empty is the right outcome: the partial writer skips
+        cells that are already filled, so the next run retries exactly the
+        strings that failed. Aborting the whole run over one of them is what
+        used to lose an entire afternoon to a five-minute capacity blip.
+        """
+        _SKIPPED.append({
+            "source": t["source"][:120],
+            "target_lang": t["target_lang"],
+            "error": str(exc)[:200],
+        })
+        streak[0] += 1
+        print("skipped [%s] %s — %s" % (t["target_lang"], t["source"][:60], exc),
+              file=sys.stderr, flush=True)
+        _progress_done(t["source"], "", t["target_lang"])
+
+    def _too_many_failures() -> bool:
+        # Nothing getting through is a dead backend, a bad key or a wrong model
+        # name — not flakiness. Stop instead of burning through every string.
+        return streak[0] >= _MAX_FAILURE_STREAK
+
+    def _streak_error() -> RuntimeError:
+        last = _SKIPPED[-1]["error"] if _SKIPPED else "unknown"
+        return RuntimeError(
+            "%d translations failed in a row — giving up. Last error: %s"
+            % (streak[0], last)
+        )
+
     if workers == 1:
         for t in tasks:
             _check_control()
             _progress_start(t["source"], t["target_lang"])
-            tr = translate_text(t["source"], t["target_lang"], provider,
-                                api_url, api_key, model)
+            try:
+                tr = translate_text(t["source"], t["target_lang"], provider,
+                                    api_url, api_key, model)
+            except StopTranslation:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                _skip(t, exc)
+                if _too_many_failures():
+                    raise _streak_error() from exc
+                continue
+            streak[0] = 0
             on_done(t, tr)
             _progress_done(t["source"], tr, t["target_lang"])
         return
@@ -457,13 +538,20 @@ def _run_translations(tasks: list, workers: int, provider: str, api_url: str,
                 t = in_flight.pop(fut)
                 try:
                     tr = fut.result()
-                except Exception as exc:  # noqa: BLE001
-                    # Surface the first error; drain remaining in-flight then
-                    # re-raise so main() can report it.
+                except StopTranslation as exc:
+                    # A real stop (user, low memory, editor gone) — drain the
+                    # rest of the in-flight batch, then re-raise.
                     if stop_exc is None:
                         stop_exc = exc
                     continue
+                except Exception as exc:  # noqa: BLE001
+                    with _PROGRESS_LOCK:
+                        _skip(t, exc)
+                        if _too_many_failures() and stop_exc is None:
+                            stop_exc = _streak_error()
+                    continue
                 with _PROGRESS_LOCK:
+                    streak[0] = 0
                     on_done(t, tr)
                     _progress_done(t["source"], tr, t["target_lang"])
 
@@ -814,13 +902,19 @@ def main() -> None:
             print(json.dumps({"type": "error", "message": f"Unsupported format: {ext}"}), flush=True)
             sys.exit(1)
 
-        print(json.dumps({"type": "done", "output": args.output, "count": count}), flush=True)
+        print(json.dumps({
+            "type": "done",
+            "output": args.output,
+            "count": count,
+            "skipped": len(_SKIPPED),
+        }), flush=True)
 
     except LowMemoryAbort as exc:
         print(json.dumps({
             "type": "stopped",
             "output": args.stopped_output or args.output,
             "count": _PROGRESS_CURRENT,
+            "skipped": len(_SKIPPED),
             "reason": "low_memory",
             "free_mb": exc.free_mb,
             "threshold_mb": exc.threshold_mb,
@@ -836,6 +930,7 @@ def main() -> None:
             "type": "stopped",
             "output": args.stopped_output or args.output,
             "count": _PROGRESS_CURRENT,
+            "skipped": len(_SKIPPED),
             "message": "Translation stopped by user",
         }), flush=True)
         sys.exit(0)
@@ -848,6 +943,7 @@ def main() -> None:
             "message": str(exc),
             "output": args.stopped_output or args.output,
             "count": _PROGRESS_CURRENT,
+            "skipped": len(_SKIPPED),
         }), flush=True)
         sys.exit(1)
 
